@@ -24,7 +24,7 @@ class AppointmentViewSet(ViewSet):
     permission_classes = ()
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=SearchRequest, responses={200: dict},tags=["Beckn Protocol"])
+    @extend_schema(request=SearchRequest, responses={200: dict},tags=["UHI - HSPA"])
     def search(self, request, *args, **kwargs):
         try:
             SearchRequest(**request.data)
@@ -40,7 +40,7 @@ class AppointmentViewSet(ViewSet):
         return Response(build_ack(), status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=SelectRequest, responses={200: dict},tags=["Beckn Protocol"])
+    @extend_schema(request=SelectRequest, responses={200: dict},tags=["UHI - HSPA"])
     def select(self, request, *args, **kwargs):
         try:
             SelectRequest(**request.data)
@@ -56,7 +56,7 @@ class AppointmentViewSet(ViewSet):
         return Response(build_ack(), status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=InitRequest, responses={200: dict},tags=["Beckn Protocol"])
+    @extend_schema(request=InitRequest, responses={200: dict},tags=["UHI - HSPA"])
     def init(self, request, *args, **kwargs):
         try:
             InitRequest(**request.data)
@@ -72,7 +72,7 @@ class AppointmentViewSet(ViewSet):
         return Response(build_ack(), status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=ConfirmRequest, responses={200: dict},tags=["Beckn Protocol"])
+    @extend_schema(request=ConfirmRequest, responses={200: dict},tags=["UHI - HSPA"])
     def confirm(self, request, *args, **kwargs):
         try:
             ConfirmRequest(**request.data)
@@ -97,7 +97,7 @@ class AppointmentViewSet(ViewSet):
         return Response(build_ack(), status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=StatusRequest, responses={200: dict},tags=["Beckn Protocol"])
+    @extend_schema(request=StatusRequest, responses={200: dict},tags=["UHI - HSPA"])
     def status(self, request, *args, **kwargs):
         try:
             StatusRequest(**request.data)
@@ -122,7 +122,7 @@ class AppointmentViewSet(ViewSet):
         return Response(build_ack(), status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=CancelRequest, responses={200: dict},tags=["Beckn Protocol"])
+    @extend_schema(request=CancelRequest, responses={200: dict},tags=["UHI - HSPA"])
     def cancel(self, request, *args, **kwargs):
         try:
             CancelRequest(**request.data)
