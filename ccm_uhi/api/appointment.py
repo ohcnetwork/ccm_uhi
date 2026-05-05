@@ -98,10 +98,6 @@ class AppointmentViewSet(ViewSet):
     @action(detail=False, methods=["post"])
     @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def status(self, request, *args, **kwargs):
-        """
-        Get booking status.
-        Body: { "booking_id": "<uuid>" }
-        """
         message = request.data.get("message", {})
 
         booking_id = message.get("booking_id")
