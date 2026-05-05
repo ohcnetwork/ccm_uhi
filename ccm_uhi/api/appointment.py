@@ -24,11 +24,8 @@ class AppointmentViewSet(ViewSet):
     def search(self, request, *args, **kwargs):
         message = request.data.get("message", {})
         provider_id = message.get("provider_id")
-        doctor_id = message.get("doctor_id")
         if not provider_id:
             return Response({"error": "provider_id is required"}, status=400)
-        if not doctor_id:
-            return Response({"error": "doctor_id is required"}, status=400)
         try:
             result = OnSearchService().execute({}, message)
         except (ValueError, Exception) as exc:

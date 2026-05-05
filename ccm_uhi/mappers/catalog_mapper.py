@@ -227,12 +227,7 @@ def build_catalog(
     schedule_map: dict[int, tuple[Schedule, Availability]],
     fulfillment_type: str = FulfillmentType.physical.value,
 ) -> dict:
-    """
-    Build a complete Beckn on_search catalog for a single facility.
 
-    Each slot is expanded into (tokens_per_slot - allocated) fulfillments,
-    one per bookable token. Each fulfillment gets a corresponding item (1:1).
-    """
     provider = map_facility_to_provider(facility)
 
     items: list[dict] = []
@@ -249,31 +244,23 @@ def build_catalog(
 
         schedule, availability = sched_avail
 
-        # Calculate remaining bookable tokens for this slot
+        # Only include slots that have remaining capacity
         tokens_per_slot = availability.tokens_per_slot or 1
         remaining = max(tokens_per_slot - slot.allocated, 0)
-
         if remaining == 0:
             continue
 
-        for _ in range(remaining):
-            fulfillment_id = str(slot.external_id)
+        fulfillment_id = str(slot.external_id)
 
-            fulfillment = map_slot_to_fulfillment(slot, resource, fulfillment_type)
-            fulfillment["id"] = fulfillment_id
-            fulfillments.append(fulfillment)
+        fulfillment = map_slot_to_fulfillment(slot, resource, fulfillment_type)
+        fulfillment["id"] = fulfillment_id
+        fulfillments.append(fulfillment)
 
-            item = map_schedule_to_item(
-                schedule, availability, fulfillment_id=fulfillment_id
-            )
-            items.append(item)
+        item = map_schedule_to_item(
+            schedule, availability, fulfillment_id=fulfillment_id
+        )
+        items.append(item)
 
-    logger.info(
-        "Mapped %d slots to %d fulfillments and %d items",
-        len(slots),
-        len(fulfillments),
-        len(items),
-    )
     provider["items"] = items
     provider["fulfillments"] = fulfillments
 

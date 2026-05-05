@@ -30,7 +30,6 @@ class OnSearchService:
     def execute(self, context: dict, message: dict) -> dict:
         provider_id = message.get("provider_id")
         doctor_id = message.get("doctor_id")
-
         if not provider_id:
             logger.warning("search missing provider_id")
             return {"providers": []}
