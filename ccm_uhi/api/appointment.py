@@ -22,13 +22,13 @@ class AppointmentViewSet(ViewSet):
     @action(detail=False, methods=["post"])
     @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def search(self, request, *args, **kwargs):
-        provider_id = request.data.get("provider_id")
-        doctor_id = request.data.get("doctor_id")
+        message = request.data.get("message", {})
+        provider_id = message.get("provider_id")
+        doctor_id = message.get("doctor_id")
         if not provider_id:
             return Response({"error": "provider_id is required"}, status=400)
         if not doctor_id:
             return Response({"error": "doctor_id is required"}, status=400)
-        message = request.data.get("message", {})
         try:
             result = OnSearchService().execute({}, message)
         except (ValueError, Exception) as exc:
