@@ -91,7 +91,7 @@ class AppointmentViewSet(ViewSet):
         Body: { "booking_id": "<uuid>" }
         """
         message = request.data.get("message", {})
-        booking_id = message.get("order_id")
+        booking_id = message.get("booking_id")
         if not booking_id:
             return Response({"error": "booking_id is required"}, status=400)
 
