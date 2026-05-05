@@ -38,17 +38,14 @@ class AppointmentViewSet(ViewSet):
 
         message = request.data.get("message", {})
         provider_id = message.get("provider_id")
-        item_id = message.get("item_id")
         fulfillment_id = message.get("fulfillment_id")
 
         if not provider_id:
             return Response({"error": "provider_id is required"}, status=400)
-        if not item_id:
-            return Response({"error": "item_id is required"}, status=400)
         if not fulfillment_id:
             return Response({"error": "fulfillment_id is required"}, status=400)
 
-        message = {"order": {"provider_id": provider_id, "item_id": item_id, "fulfillment_id": fulfillment_id}}
+        message = {"order": {"provider_id": provider_id, "fulfillment_id": fulfillment_id}}
         try:
             result = OnSelectService().execute({}, message)
         except (ValueError, Exception) as exc:

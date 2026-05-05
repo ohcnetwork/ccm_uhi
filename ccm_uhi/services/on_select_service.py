@@ -27,15 +27,10 @@ class OnSelectService:
     def execute(self, context: dict, message: dict) -> dict:
         order_msg = message.get("order", {})
         provider_id = order_msg.get("provider_id", "")
-        item_id = order_msg.get("item_id", "")
         fulfillment_id = order_msg.get("fulfillment_id", "")
 
         if not provider_id:
             msg = "Provider provider_id is required"
-            raise ValueError(msg)
-
-        if not item_id:
-            msg = "Item ID is required"
             raise ValueError(msg)
 
         if not fulfillment_id:
@@ -51,10 +46,6 @@ class OnSelectService:
 
         slot = self._resolve_slot(fulfillment_id)
         schedule, availability = self._resolve_schedule(slot)
-
-        if item_id and str(schedule.external_id) != str(item_id):
-            msg = f"Item {item_id} does not match schedule for the given slot"
-            raise ValueError(msg)
 
         if slot.resource.facility_id != facility.id:
             msg = "Slot does not belong to the requested provider"
