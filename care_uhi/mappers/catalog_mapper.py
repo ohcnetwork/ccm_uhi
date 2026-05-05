@@ -1,13 +1,3 @@
-"""
-Catalog Mapper: CARE models → Beckn catalog format.
-
-Maps:
-    Facility            → catalog.descriptor + provider
-    SchedulableResource → fulfillment.agent (practitioner)
-    TokenSlot           → fulfillment (slot with time window)
-    Schedule            → item (bookable service with price)
-    ChargeItemDefinition → item.price
-"""
 
 from __future__ import annotations
 

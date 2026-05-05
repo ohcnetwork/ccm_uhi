@@ -1,10 +1,3 @@
-"""
-Outbound Sender: Posts Beckn /on_* callbacks to the BAP.
-
-All outbound calls are fire-and-forget from Celery tasks.
-Retries are handled at the Celery level.
-"""
-
 import logging
 
 import requests

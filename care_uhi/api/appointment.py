@@ -1,13 +1,3 @@
-"""
-Inbound Views: Receives Beckn protocol requests from the Gateway/BAP.
-
-Each endpoint:
-  1. Validates the incoming payload via its Pydantic spec
-  2. Creates a BecknTransaction record
-  3. Returns an immediate ACK (per Beckn spec)
-  4. Dispatches async processing via Celery
-"""
-
 import logging
 
 from drf_spectacular.utils import extend_schema

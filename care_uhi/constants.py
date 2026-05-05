@@ -10,7 +10,7 @@ CARE_CATALOG_DESCRIPTOR = {
     "short_desc": "Open-source health care platform by Open Health Care Network (OHC)",
     "images": [
         {
-            "url": "https://care.ohc.network/images/care-logo.png",
+            "url": "https://cdn.ohc.network/care_logo.svg",
         }
     ],
 }
