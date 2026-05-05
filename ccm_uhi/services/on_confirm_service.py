@@ -42,6 +42,10 @@ class OnConfirmService:
             raise ValueError(msg)
 
         # Compute token date from slot start
+        if booking.token :
+            msg = "Booking already has a token and cannot be confirmed again"
+            raise ValueError(msg)
+        
         token_date = timezone.make_naive(
             booking.token_slot.start_datetime + timedelta(seconds=1)
         ).date()
@@ -104,13 +108,7 @@ class OnConfirmService:
             "booking_id": str(booking.external_id),
             "status": booking.status,
             "patient": map_patient_to_billing(booking.patient),
-            "token": {
-                "id": str(token.external_id),
-                "number": token.number,
-                "status": token.status,
-                "queue": str(token.queue.external_id),
-                "category": str(token.category.external_id),
-            },
+            "token":f"{token.category.shorthand} - {token.number}",
         }
 
         slot = booking.token_slot
