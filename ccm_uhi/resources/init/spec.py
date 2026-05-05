@@ -17,16 +17,7 @@ class Billing(BaseModel):
     permanent_address: str | None = None
     pincode: int | None = None
     blood_group: BloodGroupChoices | None = None
-    geo_organization: str
 
-    @field_validator("geo_organization")
-    @classmethod
-    def validate_geo_organization(cls, geo_organization):
-        if not Organization.objects.filter(
-            org_type="govt", name__icontains=geo_organization
-        ).exists():
-            raise ValueError("Geo Organization does not exist")
-        return geo_organization
 
 
 class InitOrder(BaseModel):

@@ -5,16 +5,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.viewsets import ViewSet
 
-from ccm_uhi.models import BecknOrder
-from ccm_uhi.resources.cancel.spec import CancelRequest
-from ccm_uhi.resources.confirm.spec import ConfirmRequest
-from ccm_uhi.resources.init.spec import InitRequest
-from ccm_uhi.resources.search.spec import SearchRequest
-from ccm_uhi.resources.select.spec import SelectRequest
-from ccm_uhi.resources.status.spec import StatusRequest
-from ccm_uhi.tasks.beckn_tasks import process_beckn_request
-from ccm_uhi.utils.helpers import TransactionClosedError, update_or_create_transaction
-from ccm_uhi.utils.response import build_ack, build_nack, format_validation_errors
+from ccm_uhi.services.on_search_service import OnSearchService
+from ccm_uhi.services.on_select_service import OnSelectService
+from ccm_uhi.services.on_init_service import OnInitService
+from ccm_uhi.services.on_confirm_service import OnConfirmService
+from ccm_uhi.services.on_status_service import OnStatusService
+from ccm_uhi.services.on_cancel_service import OnCancelService
 
 logger = logging.getLogger(__name__)
 
@@ -24,124 +20,116 @@ class AppointmentViewSet(ViewSet):
     permission_classes = ()
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=SearchRequest, responses={200: dict},tags=["UHI - HSPA"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def search(self, request, *args, **kwargs):
+        provider_id = request.data.get("provider_id")
+        doctor_id = request.data.get("doctor_id")
+        if not provider_id:
+            return Response({"error": "provider_id is required"}, status=400)
+        if not doctor_id:
+            return Response({"error": "doctor_id is required"}, status=400)
+        message = request.data.get("message", {})
         try:
-            SearchRequest(**request.data)
-        except Exception as exc:
-            return Response(build_nack(format_validation_errors(exc)), status=400)
-
-        context = request.data["context"]
-        try:
-            update_or_create_transaction(context, "search", request.data)
-        except TransactionClosedError as exc:
-            return Response(build_nack(str(exc)), status=400)
-        process_beckn_request.delay(str(context["message_id"]))
-        return Response(build_ack(), status=200)
+            result = OnSearchService().execute({}, message)
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=SelectRequest, responses={200: dict},tags=["UHI - HSPA"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def select(self, request, *args, **kwargs):
-        try:
-            SelectRequest(**request.data)
-        except Exception as exc:
-            return Response(build_nack(format_validation_errors(exc)), status=400)
 
-        context = request.data["context"]
+        message = request.data.get("message", {})
+        provider_id = message.get("provider_id")
+        item_id = message.get("item_id")
+        fulfillment_id = message.get("fulfillment_id")
+
+        if not provider_id:
+            return Response({"error": "provider_id is required"}, status=400)
+        if not item_id:
+            return Response({"error": "item_id is required"}, status=400)
+        if not fulfillment_id:
+            return Response({"error": "fulfillment_id is required"}, status=400)
+
+        message = {"order": {"provider_id": provider_id, "item_id": item_id, "fulfillment_id": fulfillment_id}}
         try:
-            update_or_create_transaction(context, "select", request.data)
-        except TransactionClosedError as exc:
-            return Response(build_nack(str(exc)), status=422)
-        process_beckn_request.delay(str(context["message_id"]))
-        return Response(build_ack(), status=200)
+            result = OnSelectService().execute({}, message)
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=InitRequest, responses={200: dict},tags=["UHI - HSPA"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def init(self, request, *args, **kwargs):
-        try:
-            InitRequest(**request.data)
-        except Exception as exc:
-            return Response(build_nack(format_validation_errors(exc)), status=400)
+        message = request.data.get("message", {})
+        provider_id = message.get("provider_id")
+        item_id = message.get("item_id")
+        fulfillment_id = message.get("fulfillment_id")
+        patient = message.get("patient", {})
 
-        context = request.data["context"]
+        if not provider_id:
+            return Response({"error": "provider_id is required"}, status=400)
+        if not fulfillment_id:
+            return Response({"error": "fulfillment_id is required"}, status=400)
+        if not patient.get("name") or not patient.get("phone_number"):
+            return Response({"error": "patient.name and patient.phone_number are required"}, status=400)
+
         try:
-            update_or_create_transaction(context, "init", request.data)
-        except TransactionClosedError as exc:
-            return Response(build_nack(str(exc)), status=422)
-        process_beckn_request.delay(str(context["message_id"]))
-        return Response(build_ack(), status=200)
+            result = OnInitService().execute(
+                {},
+                {"order": {"provider_id": provider_id, "item_id": item_id, "fulfillment_id": fulfillment_id, "billing": patient}},
+            )
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=ConfirmRequest, responses={200: dict},tags=["UHI - HSPA"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def confirm(self, request, *args, **kwargs):
-        try:
-            ConfirmRequest(**request.data)
-        except Exception as exc:
-            return Response(build_nack(format_validation_errors(exc)), status=400)
-
-        context = request.data["context"]
-        message = request.data.get("message", {})
-        order_id = message.get("order_id", "")
-        if not order_id or not BecknOrder.objects.filter(
-            order_id=order_id, transaction_id=context["transaction_id"]
-        ).exists():
-            return Response(
-                build_nack(f"Order {order_id} not found for this transaction"), status=422
-            )
+        """
+        Confirm a booking.
+        Body: { "booking_id": "<uuid>" }
+        """
+        booking_id = request.data.get("order_id") 
+        if not booking_id:
+            return Response({"error": "booking_id is required"}, status=400)
 
         try:
-            update_or_create_transaction(context, "confirm", request.data)
-        except TransactionClosedError as exc:
-            return Response(build_nack(str(exc)), status=422)
-        process_beckn_request.delay(str(context["message_id"]))
-        return Response(build_ack(), status=200)
+            result = OnConfirmService().execute({}, {"booking_id": booking_id})
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=StatusRequest, responses={200: dict},tags=["UHI - HSPA"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def status(self, request, *args, **kwargs):
-        try:
-            StatusRequest(**request.data)
-        except Exception as exc:
-            return Response(build_nack(format_validation_errors(exc)), status=400)
-
-        context = request.data["context"]
-        message = request.data.get("message", {})
-        order_id = message.get("order_id", "") or message.get("order", {}).get("id", "")
-        if not order_id or not BecknOrder.objects.filter(
-            order_id=order_id, transaction_id=context["transaction_id"]
-        ).exists():
-            return Response(
-                build_nack(f"Order {order_id} not found for this transaction"), status=422
-            )
+        """
+        Get booking status.
+        Body: { "booking_id": "<uuid>" }
+        """
+        booking_id = request.data.get("booking_id")
+        if not booking_id:
+            return Response({"error": "booking_id is required"}, status=400)
 
         try:
-            update_or_create_transaction(context, "status", request.data)
-        except TransactionClosedError as exc:
-            return Response(build_nack(str(exc)), status=422)
-        process_beckn_request.delay(str(context["message_id"]))
-        return Response(build_ack(), status=200)
+            result = OnStatusService().execute({}, {"booking_id": booking_id})
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)
 
     @action(detail=False, methods=["post"])
-    @extend_schema(request=CancelRequest, responses={200: dict},tags=["UHI - HSPA"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
     def cancel(self, request, *args, **kwargs):
-        try:
-            CancelRequest(**request.data)
-        except Exception as exc:
-            return Response(build_nack(format_validation_errors(exc)), status=400)
-
-        context = request.data["context"]
-        message = request.data.get("message", {})
-        order_id = message.get("order_id", "")
-        if not order_id or not BecknOrder.objects.filter(
-            order_id=order_id, transaction_id=context["transaction_id"]
-        ).exists():
-            return Response(
-                build_nack(f"Order {order_id} not found for this transaction"), status=422
-            )
+        """
+        Cancel a booking.
+        Body: { "booking_id": "<uuid>" }
+        """
+        booking_id = request.data.get("booking_id")
+        if not booking_id:
+            return Response({"error": "booking_id is required"}, status=400)
 
         try:
-            update_or_create_transaction(context, "cancel", request.data)
-        except TransactionClosedError as exc:
-            return Response(build_nack(str(exc)), status=422)
-        process_beckn_request.delay(str(context["message_id"]))
-        return Response(build_ack(), status=200)
+            result = OnCancelService().execute({}, {"booking_id": booking_id})
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)

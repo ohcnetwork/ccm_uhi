@@ -1,55 +1,56 @@
-
 import logging
 
-from django.db import transaction
-
-from ccm_uhi.mappers.order_mapper import map_booking_to_order
-from ccm_uhi.models import BecknOrder
-from ccm_uhi.resources.common import OrderState, TermsState, TERMINAL_ORDER_STATES
+from care.emr.models.scheduling.booking import TokenBooking
+from care.emr.resources.scheduling.slot.spec import BookingStatusChoices
 
 logger = logging.getLogger(__name__)
-VALID_TERM_STATES = {TermsState.agreed.value, TermsState.rejected.value}
 
 
 class OnConfirmService:
-    """Process a Beckn confirm request: validate terms + update order status."""
+    """Confirm a booking by updating its status."""
 
     def execute(self, context: dict, message: dict) -> dict:
-
-        order_id = message.get("order_id", "")
-        terms = message.get("terms", [])
-        if not order_id:
-            msg = "Order ID is required for confirm"
-            raise ValueError(msg)
-        if not terms:
-            msg = "At least one term is required for confirm"
+        booking_id = message.get("booking_id", "")
+        if not booking_id:
+            msg = "booking_id is required"
             raise ValueError(msg)
 
-        beckn_order = self._resolve_order(order_id)
-
-        if beckn_order.status in TERMINAL_ORDER_STATES:
-            msg = f"Order is already '{beckn_order.status}' and cannot be modified"
-            raise ValueError(msg)
-
-        with transaction.atomic():
-            beckn_order.status = OrderState.active.value
-            beckn_order.terms = terms
-            beckn_order.save(update_fields=["status", "terms", "updated_at"])
-
-        beckn_order.refresh_from_db()
-        return map_booking_to_order(beckn_order)
-
-    def _resolve_order(self, order_id: str) -> BecknOrder:
         try:
-            return BecknOrder.objects.select_related(
-                "booking",
-                "booking__token_slot",
-                "booking__token_slot__resource",
-                "booking__token_slot__resource__facility",
-                "booking__token_slot__availability",
-                "booking__token_slot__availability__schedule",
-                "booking__patient",
-            ).get(order_id=order_id)
-        except BecknOrder.DoesNotExist:
-            msg = f"Order {order_id} not found"
+            booking = TokenBooking.objects.select_related(
+                "token_slot",
+                "token_slot__resource",
+                "token_slot__resource__facility",
+                "token_slot__availability",
+                "token_slot__availability__schedule",
+                "patient",
+            ).get(external_id=booking_id)
+        except TokenBooking.DoesNotExist:
+            msg = f"Booking {booking_id} not found"
             raise ValueError(msg)
+
+        if booking.status in (BookingStatusChoices.cancelled.value, BookingStatusChoices.fulfilled.value):
+            msg = f"Booking is already '{booking.status}' and cannot be confirmed"
+            raise ValueError(msg)
+
+        booking.status = BookingStatusChoices.booked.value
+        booking.save(update_fields=["status", "modified_date"])
+
+        return self._build_response(booking)
+
+    def _build_response(self, booking: TokenBooking) -> dict:
+        from ccm_uhi.mappers.catalog_mapper import map_facility_to_provider, map_slot_to_fulfillment
+        from ccm_uhi.mappers.order_mapper import map_patient_to_billing
+
+        result = {
+            "booking_id": str(booking.external_id),
+            "status": booking.status,
+            "patient": map_patient_to_billing(booking.patient),
+        }
+
+        slot = booking.token_slot
+        if slot:
+            resource = slot.resource
+            result["provider"] = map_facility_to_provider(resource.facility)
+            result["fulfillment"] = map_slot_to_fulfillment(slot, resource)
+
+        return result

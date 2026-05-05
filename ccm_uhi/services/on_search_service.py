@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 class OnSearchService:
-    """Process a Beckn search intent and return matching catalog."""
+    """Search available slots for a facility, optionally filtered by doctor."""
 
     def execute(self, context: dict, message: dict) -> dict:
-        intent = message.get("intent", {})
+        provider_id = message.get("provider_id")
+        doctor_id = message.get("doctor_id")
 
-        provider_id = intent.get("provider_id")
         if not provider_id:
-            logger.warning("search intent missing provider_id")
+            logger.warning("search missing provider_id")
             return {"providers": []}
 
         try:
@@ -41,11 +41,11 @@ class OnSearchService:
             logger.warning("Provided provider_id not found: %s", provider_id)
             return {"providers": []}
 
-        fulfillment_type = self._get_fulfillment_type(intent)
-        time_start, time_end = self._get_time_window(intent)
+        fulfillment_type = self._get_fulfillment_type(message)
+        time_start, time_end = self._get_time_window(message)
 
-        # Fetch all schedulable resources under the facility
-        resources = self._find_resources_by_facility(facility)
+        # Fetch schedulable resources, optionally filtered by doctor
+        resources = self._find_resources(facility, doctor_id)
         if not resources:
             return {"providers": []}
 
@@ -73,12 +73,12 @@ class OnSearchService:
             fulfillment_type=fulfillment_type,
         )
 
-    def _get_fulfillment_type(self, intent: dict) -> str:
-        fulfillment = intent.get("fulfillment", {})
+    def _get_fulfillment_type(self, message: dict) -> str:
+        fulfillment = message.get("fulfillment", {})
         return fulfillment.get("type", FulfillmentType.physical.value)
 
-    def _get_time_window(self, intent: dict) -> tuple[dt.datetime, dt.datetime]:
-        fulfillment = intent.get("fulfillment", {})
+    def _get_time_window(self, message: dict) -> tuple[dt.datetime, dt.datetime]:
+        fulfillment = message.get("fulfillment", {})
         start_ts = fulfillment.get("start", {}).get("time", {}).get("timestamp")
         end_ts = fulfillment.get("end", {}).get("time", {}).get("timestamp")
 
@@ -99,15 +99,16 @@ class OnSearchService:
             parsed = timezone.make_aware(parsed)
         return parsed
 
-    def _find_resources_by_facility(self, facility) -> list[SchedulableResource]:
-        return list(
-            SchedulableResource.objects.filter(
-                deleted=False,
-                facility=facility,
-                resource_type="practitioner",
-                user__isnull=False,
-            ).select_related("user", "facility")
+    def _find_resources(self, facility, doctor_id: str | None = None) -> list[SchedulableResource]:
+        qs = SchedulableResource.objects.filter(
+            deleted=False,
+            facility=facility,
+            resource_type="practitioner",
+            user__isnull=False,
         )
+        if doctor_id:
+            qs = qs.filter(user__external_id=doctor_id)
+        return list(qs.select_related("user", "facility"))
 
     def _compute_slots_for_resource(
         self,

@@ -38,19 +38,14 @@ class SearchFulfillment(BaseModel):
         return self
 
 
-class SearchIntent(BaseModel):
-    provider_id: UUID | None = None
-    fulfillment: SearchFulfillment | None = None
-
-
 class SearchMessage(BaseModel):
-    intent: SearchIntent
+    provider_id: UUID | None = None
+    doctor_id: UUID | None = None
+    fulfillment: SearchFulfillment | None = None
 
 
 class SearchRequest(BaseModel):
     """Full /search request payload."""
-
-    context: BecknContext
     message: SearchMessage
 
     @model_validator(mode="after")

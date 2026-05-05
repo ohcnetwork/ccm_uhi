@@ -1,22 +1,25 @@
 """
-OnInitService: Handles Beckn /on_init callback.
+OnInitService: Create a draft booking.
 
 Validates slot availability, creates a draft TokenBooking in CARE,
-and returns a Beckn order with quote and terms.
+and returns booking details with quote.
 """
 
 import logging
-
-from django.db import transaction
-
+from care.emr.models.organization import Organization
 from care.emr.api.viewsets.scheduling import lock_create_appointment
 from care.emr.models.patient import Patient
 from care.emr.models.scheduling.booking import TokenBooking, TokenSlot
 from care.emr.resources.patient.spec import PatientCreateSpec
 from care.facility.models.facility import Facility
-from ccm_uhi.mappers.order_mapper import build_terms, map_booking_to_order
-from ccm_uhi.models import BecknOrder
-from ccm_uhi.resources.common import OrderState
+from ccm_uhi.mappers.catalog_mapper import (
+    extract_price,
+    map_facility_to_provider,
+    map_schedule_to_item,
+    map_slot_to_fulfillment,
+    resolve_facility,
+)
+from ccm_uhi.mappers.order_mapper import map_patient_to_billing
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +34,7 @@ class PatientNotRegisteredError(Exception):
 
 
 class OnInitService:
-    """Process a Beckn init request: validate + create draft booking."""
+    """Process an init request: validate + create draft booking."""
 
     def execute(self, context: dict, message: dict) -> dict:
         order_msg = message.get("order", {})
@@ -42,13 +45,10 @@ class OnInitService:
         billing = order_msg.get("billing", {})
 
         if not provider_id:
-            msg = "Provider provider_id is required"
-            raise ValueError(msg)
-        if not item_id:
-            msg = "Item ID is required"
+            msg = "facility_id (provider_id) is required"
             raise ValueError(msg)
         if not fulfillment_id:
-            msg = "Fulfillment ID is required"
+            msg = "fulfillment_id is required"
             raise ValueError(msg)
 
         # Resolve CARE objects
@@ -64,26 +64,37 @@ class OnInitService:
         # Create booking using CARE's lock handler (validates capacity + duplicates)
         booking = lock_create_appointment(slot, patient, created_by=None, note="")
 
-        # Create Beckn order record
-        with transaction.atomic():
-            beckn_order = self._create_beckn_order(
-                booking=booking,
-                transaction_id=context.get("transaction_id", ""),
-                consumer_id=context.get("consumer_id", ""),
-                consumer_uri=context.get("consumer_uri", ""),
-                provider_id=provider_id,
-                item_id=item_id,
-                fulfillment_id=fulfillment_id,
-                billing=billing,
-                status=OrderState.initialized.value,
-            )
+        # Build response from booking
+        return self._build_response(booking, facility, slot)
 
-        return map_booking_to_order(beckn_order)
+    def _build_response(self, booking: TokenBooking, facility, slot: TokenSlot) -> dict:
+        resource = slot.resource
+        availability = slot.availability
+        schedule = availability.schedule if availability else None
+
+        result = {
+            "booking_id": str(booking.external_id),
+            "status": booking.status,
+            "provider": map_facility_to_provider(facility),
+            "patient": map_patient_to_billing(booking.patient),
+            "fulfillment": map_slot_to_fulfillment(slot, resource),
+        }
+
+        if schedule:
+            result["item"] = map_schedule_to_item(schedule, availability, str(slot.external_id))
+            price_info = extract_price(schedule)
+            result["quote"] = {
+                "price": {"currency": price_info["currency"], "value": price_info["value"]},
+                "breakup": price_info.get("breakup", []),
+            }
+
+        return result
 
     def _resolve_slot(self, fulfillment_id: str) -> TokenSlot:
         try:
             return TokenSlot.objects.select_related(
-                "resource", "resource__user", "resource__facility", "availability"
+                "resource", "resource__user", "resource__facility", "availability",
+                "availability__schedule", "availability__schedule__charge_item_definition",
             ).get(external_id=fulfillment_id, deleted=False)
         except TokenSlot.DoesNotExist:
             msg = f"Slot {fulfillment_id} not found"
@@ -98,11 +109,11 @@ class OnInitService:
         name = billing.get("name", "")
 
         if not phone:
-            msg = "billing.phone_number is required"
+            msg = "patient.phone_number is required"
             raise PatientNotRegisteredError(msg)
 
         if not name:
-            msg = "billing.name is required"
+            msg = "patient.name is required"
             raise PatientNotRegisteredError(msg)
 
         patient = Patient.objects.filter(
@@ -112,34 +123,8 @@ class OnInitService:
             return patient
 
         # Validate and create using PatientCreateSpec
+        billing["geo_organization"] = str(Organization.objects.filter(org_type="govt").first().external_id)
         spec = PatientCreateSpec(**billing)
         patient = spec.de_serialize()
         patient.save()
         return patient
-
-
-
-    def _create_beckn_order(
-        self,
-        booking: TokenBooking,
-        transaction_id: str,
-        consumer_id: str,
-        consumer_uri: str,
-        provider_id: str,
-        item_id: str,
-        fulfillment_id: str,
-        billing: dict,
-        status: str,
-    ) -> BecknOrder:
-        return BecknOrder.objects.create(
-            transaction_id=transaction_id,
-            booking=booking,
-            status=status,
-            consumer_id=consumer_id,
-            consumer_uri=consumer_uri,
-            provider_id=provider_id,
-            item_id=item_id,
-            fulfillment_id=fulfillment_id,
-            billing=billing,
-            terms=build_terms(),
-        )

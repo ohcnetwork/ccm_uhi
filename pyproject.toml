@@ -1,5 +1,5 @@
 [project]
-name = "care_uhi"
+name = "ccm_uhi"
 version = "0.1.0"
 description = "Django plugin for ohcnetwork/care."
 readme = "README.md"
@@ -26,9 +26,9 @@ test = [
 ]
 
 [project.urls]
-bugs = "https://github.com/ohcnetwork/care_uhi/issues"
-changelog = "https://github.com/ohcnetwork/care_uhi/blob/master/changelog.md"
-homepage = "https://github.com/ohcnetwork/care_uhi"
+bugs = "https://github.com/ohcnetwork/ccm_uhi/issues"
+changelog = "https://github.com/ohcnetwork/ccm_uhi/blob/master/changelog.md"
+homepage = "https://github.com/ohcnetwork/ccm_uhi"
 
 
 [tool.ruff]
