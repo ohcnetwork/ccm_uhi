@@ -90,7 +90,8 @@ class AppointmentViewSet(ViewSet):
         Confirm a booking.
         Body: { "booking_id": "<uuid>" }
         """
-        booking_id = request.data.get("order_id") 
+        message = request.data.get("message", {})
+        booking_id = message.get("order_id")
         if not booking_id:
             return Response({"error": "booking_id is required"}, status=400)
 
@@ -107,7 +108,9 @@ class AppointmentViewSet(ViewSet):
         Get booking status.
         Body: { "booking_id": "<uuid>" }
         """
-        booking_id = request.data.get("booking_id")
+        message = request.data.get("message", {})
+
+        booking_id = message.get("booking_id")
         if not booking_id:
             return Response({"error": "booking_id is required"}, status=400)
 
@@ -124,7 +127,8 @@ class AppointmentViewSet(ViewSet):
         Cancel a booking.
         Body: { "booking_id": "<uuid>" }
         """
-        booking_id = request.data.get("booking_id")
+        message = request.data.get("message", {})
+        booking_id = message.get("booking_id")
         if not booking_id:
             return Response({"error": "booking_id is required"}, status=400)
 
