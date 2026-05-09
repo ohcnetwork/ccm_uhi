@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import UUID4, BaseModel, Field, field_validator
+from pydantic import UUID4, BaseModel, field_validator
 
 
 class BecknAction(str, Enum):
@@ -66,11 +66,6 @@ class Category(BaseModel):
     descriptor: Descriptor
 
 
-class Tag(BaseModel):
-    descriptor: Descriptor | None = None
-    values: list[dict] | None = Field(default=None, alias="list")
-
-
 class Price(BaseModel):
     currency: str = "INR"
     value: str = "0"
@@ -79,7 +74,6 @@ class Price(BaseModel):
 class Person(BaseModel):
     external_id: UUID4 | None = None
     name: str | None = None
-    gender: str | None = None
     dob: str | None = None
 
 
@@ -174,3 +168,34 @@ class BecknContext(BaseModel):
             msg = "provider_uri must be a valid HTTP(S) URL"
             raise ValueError(msg)
         return v
+
+
+class RequestContext(BaseModel):
+    """Context sent by the EUA with every request."""
+    message_id: str
+    transaction_id: str
+
+
+CORE_VERSION = "0.0.1"
+
+def build_response_context(
+    request_context: dict,
+    action: str,
+    facility=None,
+) -> dict:
+    """Build a response context echoing the EUA's message_id/timestamp
+    and enriching with domain, country, city from the facility's geo_organization.
+    """
+    city = ""
+    if facility and hasattr(facility, "geo_organization") and facility.geo_organization:
+        city = str(facility.geo_organization.external_id)
+
+    return {
+        "domain": "nic2004:85110",
+        "country": "IND",
+        "city": city,
+        "action": action,
+        "core_version": CORE_VERSION,
+        "message_id": request_context.get("message_id", ""),
+        "transaction_id": request_context.get("transaction_id", ""),
+    }
