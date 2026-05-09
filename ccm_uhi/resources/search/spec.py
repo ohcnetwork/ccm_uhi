@@ -1,56 +1,17 @@
 """
-Pydantic spec for Beckn /search request.
+Pydantic spec for /search request.
 
-Validates the incoming search intent:
-- provider_id (facility external_id)
-- fulfillment type and time window
+Search is now a GET endpoint with optional query parameters:
+- provider_id: optional filter to a specific facility
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, model_validator
-
-from ccm_uhi.resources.common import (
-    BecknContext,
-    FulfillmentType,
-    TimeRange,
-)
-from care.utils.time_util import care_now
+from pydantic import BaseModel
 
 
-class SearchFulfillment(BaseModel):
-    type: FulfillmentType
-    start: TimeRange
-    end: TimeRange
-
-    @model_validator(mode="after")
-    def validate_time_window(self):
-        if self.start and self.end:
-            if self.start.time.timestamp < care_now():
-                msg = "Fulfillment start time must not be in the past"
-                raise ValueError(msg)
-            if self.end.time.timestamp <= self.start.time.timestamp:
-                msg = "Fulfillment end time must be after start time"
-                raise ValueError(msg)
-        return self
-
-
-class SearchMessage(BaseModel):
+class SearchParams(BaseModel):
+    """Query parameters for the search GET endpoint."""
     provider_id: UUID | None = None
-    doctor_id: UUID | None = None
-    fulfillment: SearchFulfillment | None = None
-
-
-class SearchRequest(BaseModel):
-    """Full /search request payload."""
-    message: SearchMessage
-
-    @model_validator(mode="after")
-    def validate_action(self):
-        if self.context.action != "search":
-            msg = f"Expected action 'search', got '{self.context.action}'"
-            raise ValueError(msg)
-        return self

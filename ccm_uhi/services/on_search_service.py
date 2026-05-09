@@ -1,319 +1,162 @@
 
-import datetime as dt
 import logging
-from datetime import timedelta
 
-from django.db.models import F
 from django.utils import timezone
 
-from care.emr.models.scheduling.booking import TokenSlot
+from care.emr.models.organization import FacilityOrganization, FacilityOrganizationUser
 from care.emr.models.scheduling.schedule import (
-    Availability,
-    AvailabilityException,
     Schedule,
     SchedulableResource,
 )
-from care.emr.resources.scheduling.schedule.spec import SlotTypeOptions
+from care.facility.models.facility import Facility
 from ccm_uhi.mappers.catalog_mapper import (
-    build_catalog,
+    map_facility_to_provider,
+    map_user_to_agent,
     resolve_facility,
 )
-from ccm_uhi.resources.common import FulfillmentType
-from care.utils.time_util import care_now
+from ccm_uhi.constants import CARE_CATALOG_DESCRIPTOR
 
 logger = logging.getLogger(__name__)
 
 
 class OnSearchService:
-    """Search available slots for a facility, optionally filtered by doctor."""
+    """Return providers with facility locations and departments that have schedulable resources."""
 
     def execute(self, context: dict, message: dict) -> dict:
         provider_id = message.get("provider_id")
-        doctor_id = message.get("doctor_id")
-        if not provider_id:
-            logger.warning("search missing provider_id")
+
+        if provider_id:
+            try:
+                facilities = [resolve_facility(provider_id)]
+            except ValueError:
+                logger.warning("Provided provider_id not found: %s", provider_id)
+                return {"providers": []}
+        else:
+            facilities = self._find_facilities_with_resources()
+
+        if not facilities:
             return {"providers": []}
 
-        try:
-            facility = resolve_facility(provider_id)
-        except ValueError:
-            logger.warning("Provided provider_id not found: %s", provider_id)
-            return {"providers": []}
+        providers = []
+        for facility in facilities:
+            resources = self._find_active_resources(facility)
+            if not resources:
+                continue
 
-        fulfillment_type = self._get_fulfillment_type(message)
-        time_start, time_end = self._get_time_window(message)
+            departments = self._build_department_catalog(facility, resources)
+            if not departments:
+                continue
 
-        # Fetch schedulable resources, optionally filtered by doctor
-        resources = self._find_resources(facility, doctor_id)
-        if not resources:
-            return {"providers": []}
+            provider = map_facility_to_provider(facility)
+            provider["departments"] = departments
+            providers.append(provider)
 
-        resource_map = {r.id: r for r in resources}
-
-        # For each resource, compute available slots from Schedule+Availability
-        all_slots = []
-        schedule_map = {}
-
-        for resource in resources:
-            slots, sched_map = self._compute_slots_for_resource(
-                resource, time_start, time_end
-            )
-            all_slots.extend(slots)
-            schedule_map.update(sched_map)
-
-        if not all_slots:
-            return {"providers": []}
-
-        return build_catalog(
-            facility=facility,
-            slots=all_slots,
-            resource_map=resource_map,
-            schedule_map=schedule_map,
-            fulfillment_type=fulfillment_type,
-        )
-
-    def _get_fulfillment_type(self, message: dict) -> str:
-        fulfillment = message.get("fulfillment", {})
-        return fulfillment.get("type", FulfillmentType.physical.value)
-
-    def _get_time_window(self, message: dict) -> tuple[dt.datetime, dt.datetime]:
-        fulfillment = message.get("fulfillment", {})
-        start_ts = fulfillment.get("start", {}).get("time", {}).get("timestamp")
-        end_ts = fulfillment.get("end", {}).get("time", {}).get("timestamp")
-
-        now = care_now()
-
-        time_start = self._parse_aware(start_ts) if start_ts else now
-        time_end = self._parse_aware(end_ts) if end_ts else now + timedelta(days=7)
-
-        if time_start < now:
-            time_start = now
-
-        return time_start, time_end
-
-    @staticmethod
-    def _parse_aware(iso_string: str) -> dt.datetime:
-        parsed = dt.datetime.fromisoformat(iso_string)
-        if not timezone.is_aware(parsed):
-            parsed = timezone.make_aware(parsed)
-        return parsed
-
-    def _find_resources(self, facility, doctor_id: str | None = None) -> list[SchedulableResource]:
-        qs = SchedulableResource.objects.filter(
-            deleted=False,
-            facility=facility,
-            resource_type="practitioner",
-            user__isnull=False,
-        )
-        if doctor_id:
-            qs = qs.filter(user__external_id=doctor_id)
-        return list(qs.select_related("user", "facility"))
-
-    def _compute_slots_for_resource(
-        self,
-        resource: SchedulableResource,
-        time_start: dt.datetime,
-        time_end: dt.datetime,
-    ) -> tuple[list[TokenSlot], dict]:
-        """
-        Compute available slots for a resource across the date range.
-        Mimics CARE's lazy slot creation: generates TokenSlot records
-        from Schedule+Availability config for days that haven't been queried yet.
-        """
-        start_date = time_start.date()
-        end_date = time_end.date()
-
-        # Get all valid schedules for this resource in the date range
-        schedules = Schedule.objects.filter(
-            resource=resource,
-            valid_from__lte=end_date,
-            valid_to__gte=start_date,
-        ).select_related("charge_item_definition")
-
-        if not schedules.exists():
-            return [], {}
-
-        # Get availabilities for appointment slots
-        availabilities = Availability.objects.filter(
-            schedule__in=schedules,
-            slot_type=SlotTypeOptions.appointment.value,
-        ).select_related("schedule", "schedule__charge_item_definition")
-
-        if not availabilities.exists():
-            return [], {}
-
-        # Get exceptions
-        exceptions = list(
-            AvailabilityException.objects.filter(
-                resource=resource,
-                valid_from__lte=end_date,
-                valid_to__gte=start_date,
-            )
-        )
-
-        # Build schedule_map
-        schedule_map = {a.id: (a.schedule, a) for a in availabilities}
-
-        # Iterate each day in range, generate/fetch slots
-        all_slots = []
-        current_date = start_date
-        now = care_now()
-
-        while current_date <= end_date:
-            day_slots = self._get_or_create_slots_for_day(
-                resource, current_date, availabilities, exceptions, schedules, now
-            )
-            # Filter by time window
-            for slot in day_slots:
-                if slot.start_datetime >= time_start and slot.end_datetime <= time_end:
-                    # Check capacity
-                    tokens_per_slot = (
-                        slot.availability.tokens_per_slot if slot.availability else None
-                    )
-                    if tokens_per_slot is None or slot.allocated < tokens_per_slot:
-                        all_slots.append(slot)
-
-            current_date += timedelta(days=1)
-
-        return all_slots, schedule_map
-
-    def _get_or_create_slots_for_day(
-        self,
-        resource: SchedulableResource,
-        day: dt.date,
-        availabilities,
-        exceptions: list,
-        schedules,
-        now: dt.datetime,
-    ) -> list[TokenSlot]:
-        """
-        Get existing TokenSlot records for the day, or create them
-        from Availability config (same as CARE's get_slots_for_day).
-        """
-        # Check which schedules are valid for this day
-        valid_schedule_ids = {
-            s.id
-            for s in schedules
-            if timezone.make_naive(s.valid_from).date() <= day <= timezone.make_naive(s.valid_to).date()
+        return {
+            "descriptor": CARE_CATALOG_DESCRIPTOR,
+            "providers": providers,
         }
 
-        # Compute expected slots from availabilities
-        day_availabilities = []
-        for avail in availabilities:
-            if avail.schedule_id not in valid_schedule_ids:
-                continue
-            for day_config in avail.availability:
-                if day_config["day_of_week"] == day.weekday():
-                    day_availabilities.append(
-                        {
-                            "availability": day_config,
-                            "slot_size_in_minutes": avail.slot_size_in_minutes,
-                            "availability_id": avail.id,
-                        }
-                    )
+    def _find_facilities_with_resources(self) -> list[Facility]:
+        """Find all active facilities that have at least one active schedulable resource."""
+        now = timezone.now()
+        facility_ids = (
+            SchedulableResource.objects.filter(
+                deleted=False,
+                resource_type="practitioner",
+                user__isnull=False,
+                schedule__valid_to__gte=now,
+                schedule__deleted=False,
+            )
+            .values_list("facility_id", flat=True)
+            .distinct()
+        )
+        return list(Facility.objects.filter(id__in=facility_ids, is_active=True))
 
-        if not day_availabilities:
-            return []
-
-        # Filter exceptions for this day
-        day_exceptions = [
-            exc for exc in exceptions if exc.valid_from <= day <= exc.valid_to
-        ]
-
-        # Compute expected slot time ranges
-        expected_slots = self._compute_day_slots(day, day_availabilities, day_exceptions)
-
-        if not expected_slots:
-            return []
-
-        # Fetch existing TokenSlot records for this day
-        existing_slots = list(
-            TokenSlot.objects.filter(
-                start_datetime__date=day,
-                end_datetime__date=day,
-                resource=resource,
-            ).select_related("availability", "availability__schedule", "availability__schedule__charge_item_definition", "resource", "resource__user")
+    def _find_active_resources(self, facility) -> list[SchedulableResource]:
+        """Find practitioner resources that have at least one valid schedule."""
+        now = timezone.now()
+        return list(
+            SchedulableResource.objects.filter(
+                deleted=False,
+                facility=facility,
+                resource_type="practitioner",
+                user__isnull=False,
+                schedule__valid_to__gte=now,
+                schedule__deleted=False,
+            )
+            .select_related("user")
+            .distinct()
         )
 
-        existing_keys = {
-            f"{timezone.make_naive(s.start_datetime).time()}-{timezone.make_naive(s.end_datetime).time()}-{s.availability_id}"
-            for s in existing_slots
-        }
-
-        # Create missing slots
-        new_slots = []
-        for slot_info in expected_slots:
-            key = f"{slot_info['start_time']}-{slot_info['end_time']}-{slot_info['availability_id']}"
-            if key in existing_keys:
-                continue
-
-            end_datetime = dt.datetime.combine(day, slot_info["end_time"])
-            # Skip past slots
-            if end_datetime < timezone.make_naive(now):
-                continue
-
-            new_slot = TokenSlot.objects.create(
-                resource=resource,
-                start_datetime=dt.datetime.combine(day, slot_info["start_time"]),
-                end_datetime=end_datetime,
-                availability_id=slot_info["availability_id"],
-            )
-            new_slots.append(new_slot)
-
-        if new_slots:
-            # Re-fetch all to have proper select_related
-            existing_slots = list(
-                TokenSlot.objects.filter(
-                    start_datetime__date=day,
-                    end_datetime__date=day,
-                    resource=resource,
-                ).select_related("availability", "availability__schedule", "availability__schedule__charge_item_definition", "resource", "resource__user")
-            )
-
-        return existing_slots
-
-    @staticmethod
-    def _compute_day_slots(
-        day: dt.date,
-        availabilities: list[dict],
-        exceptions: list,
+    def _build_department_catalog(
+        self, facility, resources: list[SchedulableResource]
     ) -> list[dict]:
-        """Compute slot time ranges for a day from availability config, excluding exceptions."""
-        slots = []
-        for availability in availabilities:
-            start_time = dt.datetime.combine(
-                day,
-                dt.time.fromisoformat(availability["availability"]["start_time"]),
+        """Build departments that have schedulable resources, each with its resource list."""
+        user_ids = [r.user_id for r in resources]
+
+        # Map user_id → resource for quick lookup
+        user_resource_map: dict[int, SchedulableResource] = {}
+        for r in resources:
+            user_resource_map[r.user_id] = r
+
+        # Find department memberships for these users
+        dept_users = (
+            FacilityOrganizationUser.objects.filter(
+                organization__facility=facility,
+                organization__org_type="dept",
+                organization__active=True,
+                user_id__in=user_ids,
             )
-            end_time = dt.datetime.combine(
-                day,
-                dt.time.fromisoformat(availability["availability"]["end_time"]),
+            .select_related("organization", "user", "role")
+        )
+
+        # Build dept_id → {org, resources} mapping
+        dept_map: dict[int, dict] = {}
+        assigned_user_ids: set[int] = set()
+        for du in dept_users:
+            dept_id = du.organization_id
+            if dept_id not in dept_map:
+                dept_map[dept_id] = {
+                    "org": du.organization,
+                    "practitioners": [],
+                }
+            resource = user_resource_map.get(du.user_id)
+            if resource and resource.user:
+                role_name = du.role.name if du.role else ""
+                agent = map_user_to_agent(resource.user, role=role_name)
+                dept_map[dept_id]["practitioners"].append(agent)
+                assigned_user_ids.add(du.user_id)
+
+        # Only include departments that have schedulable resources
+        departments = []
+        for dept_info in dept_map.values():
+            org = dept_info["org"]
+            if dept_info["practitioners"]:
+                departments.append(
+                    {
+                        "id": str(org.external_id),
+                        "name": org.name,
+                        "description": org.description or "",
+                        "practitioners": dept_info["practitioners"],
+                    }
+                )
+
+        # Include resources not assigned to any department under "General"
+        unassigned = [
+            user_resource_map[uid]
+            for uid in user_ids
+            if uid not in assigned_user_ids and user_resource_map.get(uid)
+        ]
+        if unassigned:
+            departments.append(
+                {
+                    "id": "unassigned",
+                    "name": "General",
+                    "description": "",
+                    "practitioners": [
+                        map_user_to_agent(r.user) for r in unassigned if r.user
+                    ],
+                }
             )
-            slot_size = availability["slot_size_in_minutes"]
-            availability_id = availability["availability_id"]
 
-            current = start_time
-            while current < end_time:
-                slot_end = current + timedelta(minutes=slot_size)
-
-                # Check exception conflicts
-                conflicting = False
-                for exc in exceptions:
-                    exc_start = dt.datetime.combine(day, exc.start_time)
-                    exc_end = dt.datetime.combine(day, exc.end_time)
-                    if exc_start < slot_end and exc_end > current:
-                        conflicting = True
-                        break
-
-                if not conflicting:
-                    slots.append(
-                        {
-                            "start_time": current.time(),
-                            "end_time": slot_end.time(),
-                            "availability_id": availability_id,
-                        }
-                    )
-
-                current = slot_end
-
-        return slots
+        return departments

@@ -3,7 +3,7 @@ from uuid import UUID
 
 from care.emr.models.organization import Organization
 from care.emr.resources.base import PhoneNumber
-from care.emr.resources.patient.spec import BloodGroupChoices, GenderChoices
+from care.emr.resources.patient.spec import BloodGroupChoices
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ccm_uhi.resources.common import BecknContext

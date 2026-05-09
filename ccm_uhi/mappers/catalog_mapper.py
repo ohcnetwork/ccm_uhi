@@ -50,7 +50,7 @@ def map_facility_to_provider(facility: Facility) -> dict:
     }
 
 
-def map_user_to_agent(user: User) -> dict:
+def map_user_to_agent(user: User, role: str = "") -> dict:
     """Practitioner (SchedulableResource.user) → Beckn fulfillment.agent."""
     name_parts = [user.prefix or "", user.first_name, user.last_name, user.suffix or ""]
     full_name = " ".join(p for p in name_parts if p).strip()
@@ -58,19 +58,7 @@ def map_user_to_agent(user: User) -> dict:
     return {
         "id": str(user.external_id),
         "name": full_name or user.username,
-        "gender": user.gender or "",
-        "tags": [
-            {
-                "descriptor": {"code": "qualification"},
-                "list": [{"value": user.qualification or ""}],
-            },
-            {
-                "descriptor": {"code": "experience"},
-                "list": [
-                    {"value": str(user.doctor_experience_commenced_on or "")}
-                ],
-            },
-        ],
+        "role": role,
     }
 
 
@@ -78,11 +66,12 @@ def map_slot_to_fulfillment(
     slot: TokenSlot,
     resource: SchedulableResource,
     fulfillment_type: str = "physical",
+    role: str = "",
 ) -> dict:
     """TokenSlot + SchedulableResource → Beckn fulfillment."""
     agent = {}
     if resource.user:
-        agent = map_user_to_agent(resource.user)
+        agent = map_user_to_agent(resource.user, role=role)
 
     return {
         "id": str(slot.external_id),
@@ -207,16 +196,8 @@ def map_schedule_to_item(
             "value": price["value"],
         },
         "fulfillment_id": fulfillment_id,
-        "tags": [
-            {
-                "descriptor": {"code": "slot_type"},
-                "list": [{"value": availability.slot_type}],
-            },
-            {
-                "descriptor": {"code": "slot_duration_minutes"},
-                "list": [{"value": str(availability.slot_size_in_minutes)}],
-            },
-        ],
+        "slot_type": availability.slot_type,
+        "slot_duration_minutes": availability.slot_size_in_minutes,
     }
 
 
@@ -227,8 +208,23 @@ def build_catalog(
     schedule_map: dict[int, tuple[Schedule, Availability]],
     fulfillment_type: str = FulfillmentType.physical.value,
 ) -> dict:
+    from care.emr.models.organization import FacilityOrganizationUser
 
     provider = map_facility_to_provider(facility)
+
+    # Build user_id → role name lookup
+    user_ids = [
+        r.user_id for r in resource_map.values() if r.user_id
+    ]
+    user_role_map: dict[int, str] = {}
+    if user_ids:
+        org_users = FacilityOrganizationUser.objects.filter(
+            organization__facility=facility,
+            user_id__in=user_ids,
+        ).select_related("role")
+        for ou in org_users:
+            if ou.role and ou.user_id not in user_role_map:
+                user_role_map[ou.user_id] = ou.role.name
 
     items: list[dict] = []
     fulfillments: list[dict] = []
@@ -252,7 +248,8 @@ def build_catalog(
 
         fulfillment_id = str(slot.external_id)
 
-        fulfillment = map_slot_to_fulfillment(slot, resource, fulfillment_type)
+        role = user_role_map.get(resource.user_id, "") if resource.user_id else ""
+        fulfillment = map_slot_to_fulfillment(slot, resource, fulfillment_type, role=role)
         fulfillment["id"] = fulfillment_id
         fulfillments.append(fulfillment)
 

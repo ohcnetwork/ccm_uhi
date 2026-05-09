@@ -1,121 +1,324 @@
 """
-OnSelectService: Handles Beckn /on_select callback.
+OnSelectService: Compute available slots for a specific doctor at a facility.
 
-Resolves the selected provider (facility), items (schedules), and
-fulfillments (slots), then returns item details, fulfillment info,
-and a quote with price breakup.
+Takes provider_id (facility) + doctor_id (user external_id) + fulfillment
+details (type, time window) and returns the slot catalog — the computation
+that previously lived in OnSearchService.
 """
 
+import datetime as dt
 import logging
+from datetime import timedelta
+
+from django.utils import timezone
 
 from care.emr.models.scheduling.booking import TokenSlot
-from care.emr.models.scheduling.schedule import Availability, Schedule
+from care.emr.models.scheduling.schedule import (
+    Availability,
+    AvailabilityException,
+    Schedule,
+    SchedulableResource,
+)
+from care.emr.resources.scheduling.schedule.spec import SlotTypeOptions
+from care.utils.time_util import care_now
 from ccm_uhi.mappers.catalog_mapper import (
-    extract_price,
-    map_facility_to_provider,
-    map_schedule_to_item,
-    map_slot_to_fulfillment,
+    build_catalog,
     resolve_facility,
 )
+from ccm_uhi.resources.common import FulfillmentType
 
 logger = logging.getLogger(__name__)
 
 
 class OnSelectService:
-    """Process a Beckn select request and return order with items, fulfillment, and quote."""
+    """Compute and return available slots for a doctor at a facility."""
 
     def execute(self, context: dict, message: dict) -> dict:
-        order_msg = message.get("order", {})
-        provider_id = order_msg.get("provider_id", "")
-        fulfillment_id = order_msg.get("fulfillment_id", "")
+        provider_id = message.get("provider_id")
+        doctor_id = message.get("doctor_id")
 
         if not provider_id:
-            msg = "Provider provider_id is required"
+            msg = "provider_id is required"
             raise ValueError(msg)
-
-        if not fulfillment_id:
-            msg = "Fulfillment ID is required"
+        if not doctor_id:
+            msg = "doctor_id is required"
             raise ValueError(msg)
 
         facility = resolve_facility(provider_id)
 
-        result_items = []
-        fulfillments = []
-        quote_breakup = []
-        total_price = 0.0
+        fulfillment_type = self._get_fulfillment_type(message)
+        time_start, time_end = self._get_time_window(message)
 
-        slot = self._resolve_slot(fulfillment_id)
-        schedule, availability = self._resolve_schedule(slot)
-
-        if slot.resource.facility_id != facility.id:
-            msg = "Slot does not belong to the requested provider"
+        # Find the specific doctor's schedulable resource
+        resources = self._find_resources(facility, doctor_id)
+        if not resources:
+            msg = "No schedulable resource found for the given doctor"
             raise ValueError(msg)
 
-        self._validate_slot_availability(slot)
+        resource_map = {r.id: r for r in resources}
 
-        resource = slot.resource
+        # Compute available slots for each resource
+        all_slots = []
+        schedule_map = {}
 
-            # Build item using shared mapper
-        result_items.append(
-            map_schedule_to_item(schedule, availability, str(slot.external_id))
+        for resource in resources:
+            slots, sched_map = self._compute_slots_for_resource(
+                resource, time_start, time_end
             )
+            all_slots.extend(slots)
+            schedule_map.update(sched_map)
 
-            # Build fulfillment using shared mapper
-        fulfillments.append(map_slot_to_fulfillment(slot, resource))
+        if not all_slots:
+            msg = "No available slots found for the requested time window"
+            raise ValueError(msg)
 
-            # Accumulate quote from full price (includes breakup)
-        price_info = extract_price(schedule)
-        total_price += float(price_info.get("value", 0))
-        quote_breakup.extend(price_info.get("breakup", []))
+        return build_catalog(
+            facility=facility,
+            slots=all_slots,
+            resource_map=resource_map,
+            schedule_map=schedule_map,
+            fulfillment_type=fulfillment_type,
+        )
 
-        quote = {
-            "price": {
-                "currency": "INR",
-                "value": str(round(total_price, 2)),
-            },
-            "breakup": quote_breakup,
+    def _get_fulfillment_type(self, message: dict) -> str:
+        fulfillment = message.get("fulfillment", {})
+        return fulfillment.get("type", FulfillmentType.physical.value)
+
+    def _get_time_window(self, message: dict) -> tuple[dt.datetime, dt.datetime]:
+        fulfillment = message.get("fulfillment", {})
+        start_ts = fulfillment.get("start", {}).get("time", {}).get("timestamp")
+        end_ts = fulfillment.get("end", {}).get("time", {}).get("timestamp")
+
+        now = care_now()
+
+        time_start = self._parse_aware(start_ts) if start_ts else now
+        time_end = self._parse_aware(end_ts) if end_ts else now + timedelta(days=7)
+
+        if time_start < now:
+            msg = "Fulfillment start time must not be in the past"
+            raise ValueError(msg)
+
+        if time_end <= time_start:
+            msg = "Fulfillment end time must be after start time"
+            raise ValueError(msg)
+
+        return time_start, time_end
+
+    @staticmethod
+    def _parse_aware(iso_string: str) -> dt.datetime:
+        parsed = dt.datetime.fromisoformat(iso_string)
+        if not timezone.is_aware(parsed):
+            parsed = timezone.make_aware(parsed)
+        return parsed
+
+    def _find_resources(self, facility, doctor_id: str) -> list[SchedulableResource]:
+        return list(
+            SchedulableResource.objects.filter(
+                deleted=False,
+                facility=facility,
+                resource_type="practitioner",
+                user__isnull=False,
+                user__external_id=doctor_id,
+            ).select_related("user", "facility")
+        )
+
+    def _compute_slots_for_resource(
+        self,
+        resource: SchedulableResource,
+        time_start: dt.datetime,
+        time_end: dt.datetime,
+    ) -> tuple[list[TokenSlot], dict]:
+        """
+        Compute available slots for a resource across the date range.
+        Generates TokenSlot records from Schedule+Availability config.
+        """
+        start_date = time_start.date()
+        end_date = time_end.date()
+
+        schedules = Schedule.objects.filter(
+            resource=resource,
+            valid_from__lte=end_date,
+            valid_to__gte=start_date,
+        ).select_related("charge_item_definition")
+
+        if not schedules.exists():
+            return [], {}
+
+        availabilities = Availability.objects.filter(
+            schedule__in=schedules,
+            slot_type=SlotTypeOptions.appointment.value,
+        ).select_related("schedule", "schedule__charge_item_definition")
+
+        if not availabilities.exists():
+            return [], {}
+
+        exceptions = list(
+            AvailabilityException.objects.filter(
+                resource=resource,
+                valid_from__lte=end_date,
+                valid_to__gte=start_date,
+            )
+        )
+
+        schedule_map = {a.id: (a.schedule, a) for a in availabilities}
+
+        all_slots = []
+        current_date = start_date
+        now = care_now()
+
+        while current_date <= end_date:
+            day_slots = self._get_or_create_slots_for_day(
+                resource, current_date, availabilities, exceptions, schedules, now
+            )
+            for slot in day_slots:
+                if slot.start_datetime >= time_start and slot.end_datetime <= time_end:
+                    tokens_per_slot = (
+                        slot.availability.tokens_per_slot if slot.availability else None
+                    )
+                    if tokens_per_slot is None or slot.allocated < tokens_per_slot:
+                        all_slots.append(slot)
+
+            current_date += timedelta(days=1)
+
+        return all_slots, schedule_map
+
+    def _get_or_create_slots_for_day(
+        self,
+        resource: SchedulableResource,
+        day: dt.date,
+        availabilities,
+        exceptions: list,
+        schedules,
+        now: dt.datetime,
+    ) -> list[TokenSlot]:
+        """Get existing TokenSlot records for the day, or create them from Availability config."""
+        valid_schedule_ids = {
+            s.id
+            for s in schedules
+            if timezone.make_naive(s.valid_from).date() <= day <= timezone.make_naive(s.valid_to).date()
         }
 
-        return {
-            "order":{
-                "provider": map_facility_to_provider(facility),
-                "items": result_items,
-                "fulfillments": fulfillments,
-                "quote": quote,
-                }
-            }
+        day_availabilities = []
+        for avail in availabilities:
+            if avail.schedule_id not in valid_schedule_ids:
+                continue
+            for day_config in avail.availability:
+                if day_config["day_of_week"] == day.weekday():
+                    day_availabilities.append(
+                        {
+                            "availability": day_config,
+                            "slot_size_in_minutes": avail.slot_size_in_minutes,
+                            "availability_id": avail.id,
+                        }
+                    )
 
-    def _resolve_slot(self, fulfillment_id: str) -> TokenSlot:
-        try:
-            return TokenSlot.objects.select_related(
-                "resource",
-                "resource__user",
-                "resource__facility",
+        if not day_availabilities:
+            return []
+
+        day_exceptions = [
+            exc for exc in exceptions if exc.valid_from <= day <= exc.valid_to
+        ]
+
+        expected_slots = self._compute_day_slots(day, day_availabilities, day_exceptions)
+
+        if not expected_slots:
+            return []
+
+        existing_slots = list(
+            TokenSlot.objects.filter(
+                start_datetime__date=day,
+                end_datetime__date=day,
+                resource=resource,
+            ).select_related(
                 "availability",
                 "availability__schedule",
                 "availability__schedule__charge_item_definition",
-            ).get(external_id=fulfillment_id, deleted=False)
-        except TokenSlot.DoesNotExist:
-            msg = f"Fulfillment (slot) {fulfillment_id} not found"
-            raise ValueError(msg)
+                "resource",
+                "resource__user",
+            )
+        )
 
-    def _resolve_schedule(
-        self, slot: TokenSlot
-    ) -> tuple[Schedule, Availability]:
-        availability = slot.availability
-        if not availability:
-            msg = f"Slot {slot.external_id} has no linked availability"
-            raise ValueError(msg)
+        existing_keys = {
+            f"{timezone.make_naive(s.start_datetime).time()}-{timezone.make_naive(s.end_datetime).time()}-{s.availability_id}"
+            for s in existing_slots
+        }
 
-        schedule = availability.schedule
-        if not schedule:
-            msg = f"Availability {availability.id} has no linked schedule"
-            raise ValueError(msg)
+        new_slots = []
+        for slot_info in expected_slots:
+            key = f"{slot_info['start_time']}-{slot_info['end_time']}-{slot_info['availability_id']}"
+            if key in existing_keys:
+                continue
 
-        return schedule, availability
+            end_datetime = dt.datetime.combine(day, slot_info["end_time"])
+            if end_datetime < timezone.make_naive(now):
+                continue
 
-    def _validate_slot_availability(self, slot: TokenSlot) -> None:
-        if slot.availability and slot.availability.tokens_per_slot:
-            if slot.allocated >= slot.availability.tokens_per_slot:
-                msg = f"Slot {slot.external_id} is fully booked"
-                raise ValueError(msg)
+            new_slot = TokenSlot.objects.create(
+                resource=resource,
+                start_datetime=dt.datetime.combine(day, slot_info["start_time"]),
+                end_datetime=end_datetime,
+                availability_id=slot_info["availability_id"],
+            )
+            new_slots.append(new_slot)
+
+        if new_slots:
+            existing_slots = list(
+                TokenSlot.objects.filter(
+                    start_datetime__date=day,
+                    end_datetime__date=day,
+                    resource=resource,
+                ).select_related(
+                    "availability",
+                    "availability__schedule",
+                    "availability__schedule__charge_item_definition",
+                    "resource",
+                    "resource__user",
+                )
+            )
+
+        return existing_slots
+
+    @staticmethod
+    def _compute_day_slots(
+        day: dt.date,
+        availabilities: list[dict],
+        exceptions: list,
+    ) -> list[dict]:
+        """Compute slot time ranges for a day from availability config, excluding exceptions."""
+        slots = []
+        for availability in availabilities:
+            start_time = dt.datetime.combine(
+                day,
+                dt.time.fromisoformat(availability["availability"]["start_time"]),
+            )
+            end_time = dt.datetime.combine(
+                day,
+                dt.time.fromisoformat(availability["availability"]["end_time"]),
+            )
+            slot_size = availability["slot_size_in_minutes"]
+            availability_id = availability["availability_id"]
+
+            current = start_time
+            while current < end_time:
+                slot_end = current + timedelta(minutes=slot_size)
+
+                conflicting = False
+                for exc in exceptions:
+                    exc_start = dt.datetime.combine(day, exc.start_time)
+                    exc_end = dt.datetime.combine(day, exc.end_time)
+                    if exc_start < slot_end and exc_end > current:
+                        conflicting = True
+                        break
+
+                if not conflicting:
+                    slots.append(
+                        {
+                            "start_time": current.time(),
+                            "end_time": slot_end.time(),
+                            "availability_id": availability_id,
+                        }
+                    )
+
+                current = slot_end
+
+        return slots

@@ -17,9 +17,9 @@ class OnCancelService:
     """Cancel a booking."""
 
     def execute(self, context: dict, message: dict) -> dict:
-        booking_id = message.get("booking_id", "")
-        if not booking_id:
-            msg = "booking_id is required"
+        order_id = message.get("order_id", "")
+        if not order_id:
+            msg = "order_id is required"
             raise ValueError(msg)
 
         try:
@@ -30,9 +30,9 @@ class OnCancelService:
                 "token_slot__availability",
                 "token_slot__availability__schedule",
                 "patient",
-            ).get(external_id=booking_id)
+            ).get(external_id=order_id)
         except TokenBooking.DoesNotExist:
-            msg = f"Booking {booking_id} not found"
+            msg = f"Order {order_id} not found"
             raise ValueError(msg)
 
         if booking.status in (BookingStatusChoices.cancelled.value, BookingStatusChoices.fulfilled.value):
@@ -56,7 +56,7 @@ class OnCancelService:
         from ccm_uhi.mappers.order_mapper import map_patient_to_billing
 
         result = {
-            "booking_id": str(booking.external_id),
+            "order_id": str(booking.external_id),
             "status": booking.status,
             "patient": map_patient_to_billing(booking.patient),
         }
