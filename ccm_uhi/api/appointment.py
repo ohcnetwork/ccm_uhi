@@ -47,11 +47,12 @@ class AppointmentViewSet(ViewSet):
         message = request.data.get("message", {})
         provider_id = message.get("provider_id")
         doctor_id = message.get("doctor_id")
+        department_id = message.get("department_id")
 
         if not provider_id:
             return Response({"error": "provider_id is required"}, status=400)
-        if not doctor_id:
-            return Response({"error": "doctor_id is required"}, status=400)
+        if not doctor_id and not department_id:
+            return Response({"error": "at least one of doctor_id or department_id is required"}, status=400)
 
         try:
             result = OnSelectService().execute({}, message)

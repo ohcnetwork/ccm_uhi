@@ -12,6 +12,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
+from care.emr.models.organization import FacilityOrganizationUser
 from care.emr.models.scheduling.booking import TokenSlot
 from care.emr.models.scheduling.schedule import (
     Availability,
@@ -36,12 +37,13 @@ class OnSelectService:
     def execute(self, context: dict, message: dict) -> dict:
         provider_id = message.get("provider_id")
         doctor_id = message.get("doctor_id")
+        department_id = message.get("department_id")
 
         if not provider_id:
             msg = "provider_id is required"
             raise ValueError(msg)
-        if not doctor_id:
-            msg = "doctor_id is required"
+        if not doctor_id and not department_id:
+            msg = "at least one of doctor_id or department_id is required"
             raise ValueError(msg)
 
         facility = resolve_facility(provider_id)
@@ -50,7 +52,7 @@ class OnSelectService:
         time_start, time_end = self._get_time_window(message)
 
         # Find the specific doctor's schedulable resource
-        resources = self._find_resources(facility, doctor_id)
+        resources = self._find_resources(facility, doctor_id, department_id)
         if not resources:
             msg = "No schedulable resource found for the given doctor"
             raise ValueError(msg)
@@ -111,16 +113,27 @@ class OnSelectService:
             parsed = timezone.make_aware(parsed)
         return parsed
 
-    def _find_resources(self, facility, doctor_id: str) -> list[SchedulableResource]:
-        return list(
-            SchedulableResource.objects.filter(
-                deleted=False,
-                facility=facility,
-                resource_type="practitioner",
-                user__isnull=False,
-                user__external_id=doctor_id,
-            ).select_related("user", "facility")
-        )
+    def _find_resources(self, facility, doctor_id: str | None = None, department_id: str | None = None) -> list[SchedulableResource]:
+        qs = SchedulableResource.objects.filter(
+            deleted=False,
+            facility=facility,
+            resource_type="practitioner",
+            user__isnull=False,
+        ).select_related("user", "facility")
+
+        if doctor_id:
+            qs = qs.filter(user__external_id=doctor_id)
+
+        if department_id:
+            user_ids_in_dept = FacilityOrganizationUser.objects.filter(
+                organization__facility=facility,
+                organization__org_type="dept",
+                organization__external_id=department_id,
+                organization__active=True,
+            ).values_list("user_id", flat=True)
+            qs = qs.filter(user_id__in=user_ids_in_dept)
+
+        return list(qs)
 
     def _compute_slots_for_resource(
         self,
