@@ -52,13 +52,29 @@ def map_facility_to_provider(facility: Facility) -> dict:
 
 def map_user_to_agent(user: User, role: str = "") -> dict:
     """Practitioner (SchedulableResource.user) → Beckn fulfillment.agent."""
+    from care.emr.models.organization import FacilityOrganizationUser
+
     name_parts = [user.prefix or "", user.first_name, user.last_name, user.suffix or ""]
     full_name = " ".join(p for p in name_parts if p).strip()
+
+    departments = []
+    dept_memberships = FacilityOrganizationUser.objects.filter(
+        user=user,
+        organization__org_type="dept",
+        organization__active=True,
+    ).select_related("organization")
+    for membership in dept_memberships:
+        org = membership.organization
+        departments.append({
+            "id": str(org.external_id),
+            "name": org.name,
+        })
 
     return {
         "id": str(user.external_id),
         "name": full_name or user.username,
         "role": role,
+        "departments": departments,
     }
 
 
