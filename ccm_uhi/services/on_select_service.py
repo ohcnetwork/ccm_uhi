@@ -11,6 +11,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
+from care.emr.api.viewsets.scheduling.availability import SlotViewSet
 from care.emr.models.organization import FacilityOrganizationUser
 from care.emr.models.scheduling.booking import TokenSlot
 from care.emr.models.scheduling.schedule import SchedulableResource
@@ -52,8 +53,23 @@ class OnSelectService:
 
         resource_map = {r.id: r for r in resources}
 
-        # Fetch existing available slots (include slots that started before
-        # now but haven't ended yet — they are still bookable)
+        start_date = time_start.date()
+        end_date = time_end.date()
+        current_date = start_date
+
+        while current_date <= end_date:
+            for resource in resources:
+                SlotViewSet.get_slots_for_day_handler(
+                    str(facility.external_id),
+                    {
+                        "resource_type": resource.resource_type,
+                        "resource_id": str(resource.user.external_id),
+                        "day": current_date.isoformat(),
+                    },
+                )
+            current_date += timedelta(days=1)
+
+        # Now fetch all slots in the time window
         slots = list(
             TokenSlot.objects.filter(
                 resource__in=resources,
@@ -79,8 +95,13 @@ class OnSelectService:
                 available_slots.append(slot)
 
         if not available_slots:
-            msg = "No available slots found for the requested time window"
-            raise ValueError(msg)
+           return build_catalog(
+                facility=facility,
+                slots=[],
+                resource_map={},
+                schedule_map={},
+                fulfillment_type=fulfillment_type,
+            )
 
         # Build schedule_map from the slots' availability records
         schedule_map = {}
@@ -114,8 +135,7 @@ class OnSelectService:
         time_end = self._parse_aware(end_ts) if end_ts else now + timedelta(days=7)
 
         if time_start < now:
-            msg = "Fulfillment start time must not be in the past"
-            raise ValueError(msg)
+            time_start = now
 
         if time_end <= time_start:
             msg = "Fulfillment end time must be after start time"
@@ -131,15 +151,9 @@ class OnSelectService:
         return parsed
 
     def _find_resources(self, facility, doctor_id: str | None = None, department_id: str | None = None) -> list[SchedulableResource]:
-        qs = SchedulableResource.objects.filter(
-            deleted=False,
-            facility=facility,
-            resource_type="practitioner",
-            user__isnull=False,
-        ).select_related("user", "facility")
-
+        filters = {"deleted": False, "facility": facility, "resource_type": "practitioner", "user__isnull": False}
         if doctor_id:
-            qs = qs.filter(user__external_id=doctor_id)
+            filters["user__external_id"] = doctor_id
 
         if department_id:
             user_ids_in_dept = FacilityOrganizationUser.objects.filter(
@@ -148,6 +162,12 @@ class OnSelectService:
                 organization__external_id=department_id,
                 organization__active=True,
             ).values_list("user_id", flat=True)
-            qs = qs.filter(user_id__in=user_ids_in_dept)
+            filters["user_id__in"] = user_ids_in_dept
+
+        qs = SchedulableResource.objects.filter(**filters).select_related("user", "facility")
+
+
 
         return list(qs)
+
+
