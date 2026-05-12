@@ -50,31 +50,16 @@ def map_facility_to_provider(facility: Facility) -> dict:
     }
 
 
-def map_user_to_agent(user: User, role: str = "") -> dict:
+def map_user_to_agent(user: User, role: str = "", departments: list[dict] | None = None) -> dict:
     """Practitioner (SchedulableResource.user) → Beckn fulfillment.agent."""
-    from care.emr.models.organization import FacilityOrganizationUser
-
     name_parts = [user.prefix or "", user.first_name, user.last_name, user.suffix or ""]
     full_name = " ".join(p for p in name_parts if p).strip()
-
-    departments = []
-    dept_memberships = FacilityOrganizationUser.objects.filter(
-        user=user,
-        organization__org_type="dept",
-        organization__active=True,
-    ).select_related("organization")
-    for membership in dept_memberships:
-        org = membership.organization
-        departments.append({
-            "id": str(org.external_id),
-            "name": org.name,
-        })
 
     return {
         "id": str(user.external_id),
         "name": full_name or user.username,
         "role": role,
-        "departments": departments,
+        "departments": departments or [],
     }
 
 
@@ -83,11 +68,12 @@ def map_slot_to_fulfillment(
     resource: SchedulableResource,
     fulfillment_type: str = "physical",
     role: str = "",
+    departments: list[dict] | None = None,
 ) -> dict:
     """TokenSlot + SchedulableResource → Beckn fulfillment."""
     agent = {}
     if resource.user:
-        agent = map_user_to_agent(resource.user, role=role)
+        agent = map_user_to_agent(resource.user, role=role, departments=departments)
 
     return {
         "id": str(slot.external_id),
@@ -228,19 +214,25 @@ def build_catalog(
 
     provider = map_facility_to_provider(facility)
 
-    # Build user_id → role name lookup
+    # Build user_id → role name lookup and user_id → departments lookup
     user_ids = [
         r.user_id for r in resource_map.values() if r.user_id
     ]
     user_role_map: dict[int, str] = {}
+    user_dept_map: dict[int, list[dict]] = {}
     if user_ids:
         org_users = FacilityOrganizationUser.objects.filter(
             organization__facility=facility,
             user_id__in=user_ids,
-        ).select_related("role")
+        ).select_related("role", "organization")
         for ou in org_users:
             if ou.role and ou.user_id not in user_role_map:
                 user_role_map[ou.user_id] = ou.role.name
+            if ou.organization.org_type == "dept" and ou.organization.active:
+                user_dept_map.setdefault(ou.user_id, []).append({
+                    "id": str(ou.organization.external_id),
+                    "name": ou.organization.name,
+                })
 
     items: list[dict] = []
     fulfillments: list[dict] = []
@@ -256,16 +248,11 @@ def build_catalog(
 
         schedule, availability = sched_avail
 
-        # Only include slots that have remaining capacity
-        tokens_per_slot = availability.tokens_per_slot or 1
-        remaining = max(tokens_per_slot - slot.allocated, 0)
-        if remaining == 0:
-            continue
-
         fulfillment_id = str(slot.external_id)
 
         role = user_role_map.get(resource.user_id, "") if resource.user_id else ""
-        fulfillment = map_slot_to_fulfillment(slot, resource, fulfillment_type, role=role)
+        departments = user_dept_map.get(resource.user_id, []) if resource.user_id else []
+        fulfillment = map_slot_to_fulfillment(slot, resource, fulfillment_type, role=role, departments=departments)
         fulfillment["id"] = fulfillment_id
         fulfillments.append(fulfillment)
 

@@ -99,7 +99,6 @@ class OnSearchService:
         for r in resources:
             user_resource_map[r.user_id] = r
 
-        # Find department memberships for these users
         dept_users = (
             FacilityOrganizationUser.objects.filter(
                 organization__facility=facility,
@@ -111,7 +110,17 @@ class OnSearchService:
         )
 
         # Build dept_id → {org, resources} mapping
+        # First pass: build complete user_id → departments map
+        user_dept_map: dict[int, list[dict]] = {}
+        for du in dept_users:
+            user_dept_map.setdefault(du.user_id, []).append({
+                "id": str(du.organization.external_id),
+                "name": du.organization.name,
+            })
+
+        # Second pass: group practitioners into departments (with full dept lists)
         dept_map: dict[int, dict] = {}
+        seen_dept_user: set[tuple[int, int]] = set()
         assigned_user_ids: set[int] = set()
         for du in dept_users:
             dept_id = du.organization_id
@@ -120,10 +129,15 @@ class OnSearchService:
                     "org": du.organization,
                     "practitioners": [],
                 }
+            # Avoid duplicate user in same department
+            if (dept_id, du.user_id) in seen_dept_user:
+                continue
+            seen_dept_user.add((dept_id, du.user_id))
+
             resource = user_resource_map.get(du.user_id)
             if resource and resource.user:
                 role_name = du.role.name if du.role else ""
-                agent = map_user_to_agent(resource.user, role=role_name)
+                agent = map_user_to_agent(resource.user, role=role_name, departments=user_dept_map.get(du.user_id, []))
                 dept_map[dept_id]["practitioners"].append(agent)
                 assigned_user_ids.add(du.user_id)
 
