@@ -1,4 +1,5 @@
 
+from enum import Enum
 import logging
 from datetime import timedelta
 
@@ -26,6 +27,17 @@ class SlotUnavailableError(Exception):
 class PatientNotRegisteredError(Exception):
     pass
 
+# Map user-friendly blood group labels to Care's BloodGroupChoices values
+BLOOD_GROUP_LABEL_MAP = {
+    "A+": "A_positive",
+    "A-": "A_negative",
+    "B+": "B_positive",
+    "B-": "B_negative",
+    "AB+": "AB_positive",
+    "AB-": "AB_negative",
+    "O+": "O_positive",
+    "O-": "O_negative",
+}
 
 class OnConfirmService:
     """Create a booking and confirm it with a token in a single call."""
@@ -86,11 +98,18 @@ class OnConfirmService:
             msg = f"Provider {descriptor_id} not found"
             raise ValueError(msg)
 
-    def _resolve_or_create_patient(self, billing: dict) -> Patient:
+    def _resolve_or_create_patient(self, patient_data: dict) -> Patient:
         """Find existing patient by phone and name, or create via PatientCreateSpec."""
-        phone = billing.get("phone_number", "")
-        name = billing.get("name", "")
+        phone = patient_data.get("phone_number", "")
+        if not phone.startswith("+91"):
+            patient_data["phone_number"] = "+91" + phone
 
+        name = patient_data.get("name", "")
+
+        raw_bg = patient_data.get("blood_group")
+        patient_data["blood_group"] = BLOOD_GROUP_LABEL_MAP.get(
+            raw_bg, raw_bg
+        ) or "unknown"
         if not phone:
             msg = "patient.phone_number is required"
             raise PatientNotRegisteredError(msg)
@@ -99,16 +118,17 @@ class OnConfirmService:
             msg = "patient.name is required"
             raise PatientNotRegisteredError(msg)
 
-        patient = Patient.objects.filter(
+        existing = Patient.objects.filter(
             phone_number=phone, name__icontains=name, deleted=False
         ).first()
-        if patient:
-            return patient
+        if existing:
+            return existing
 
-        billing["geo_organization"] = str(
+        patient_data["geo_organization"] = str(
             Organization.objects.filter(org_type="govt").first().external_id
         )
-        spec = PatientCreateSpec(**billing)
+
+        spec = PatientCreateSpec(**patient_data)
         patient = spec.de_serialize()
         patient.save()
         return patient
