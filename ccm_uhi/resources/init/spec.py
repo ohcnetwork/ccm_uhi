@@ -2,7 +2,6 @@
 from uuid import UUID
 
 from care.emr.models.organization import Organization
-from care.emr.resources.base import PhoneNumber
 from care.emr.resources.patient.spec import BloodGroupChoices, GenderChoices
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -11,8 +10,8 @@ from ccm_uhi.resources.common import BecknContext
 class Billing(BaseModel):
     name: str
     gender: GenderChoices
-    phone_number: PhoneNumber = Field(max_length=14)
-    emergency_phone_number: PhoneNumber | None = Field(None, max_length=14)
+    phone_number: str = Field(max_length=14)
+    emergency_phone_number: str | None = Field(None, max_length=14)
     address: str | None = None
     permanent_address: str | None = None
     pincode: int | None = None
