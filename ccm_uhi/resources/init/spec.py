@@ -3,7 +3,7 @@ from uuid import UUID
 
 from care.emr.models.organization import Organization
 from care.emr.resources.base import PhoneNumber
-from care.emr.resources.patient.spec import BloodGroupChoices
+from care.emr.resources.patient.spec import BloodGroupChoices, GenderChoices
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ccm_uhi.resources.common import BecknContext
@@ -16,7 +16,31 @@ class Billing(BaseModel):
     address: str | None = None
     permanent_address: str | None = None
     pincode: int | None = None
-    blood_group: BloodGroupChoices | None = None
+    blood_group: BloodGroupChoices | None = "unknown"
+
+    @field_validator("phone_number", "emergency_phone_number", mode="before")
+    @classmethod
+    def add_country_code(cls, v):
+        """Auto-prefix phone numbers with +91 if not already prefixed."""
+        if v is None:
+            return v
+        # Convert to string and strip whitespace
+        phone_str = str(v).strip()
+        # If empty, return as is
+        if not phone_str:
+            return phone_str
+        # If it doesn't start with +, add +91
+        if not phone_str.startswith("+"):
+            return f"+91{phone_str}"
+        return phone_str
+
+    @field_validator("blood_group", mode="before")
+    @classmethod
+    def set_default_blood_group(cls, v):
+        """Set blood_group to 'unknown' if empty or None."""
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return "unknown"
+        return v
 
 
 
