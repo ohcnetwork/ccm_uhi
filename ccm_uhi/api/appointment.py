@@ -11,6 +11,7 @@ from ccm_uhi.services.on_select_service import OnSelectService
 from ccm_uhi.services.on_confirm_service import OnConfirmService
 from ccm_uhi.services.on_status_service import OnStatusService
 from ccm_uhi.services.on_cancel_service import OnCancelService
+from ccm_uhi.services.on_reschedule_service import OnRescheduleService
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,39 @@ class AppointmentViewSet(ViewSet):
 
         facility = self._facility_from_booking(result)
         response_context = build_response_context(req_context, "cancel", facility)
+        return Response({"context": response_context, "message": result}, status=200)
+
+    @action(detail=False, methods=["post"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
+    def reschedule(self, request, *args, **kwargs):
+        try:
+            req_context = _parse_context(request.data)
+        except Exception as exc:
+            return Response({"error": f"Invalid context: {exc}"}, status=400)
+
+        message = request.data.get("message", {})
+        order_id = message.get("order_id")
+        fulfillment_id = message.get("fulfillment_id")
+
+        if not order_id:
+            return Response({"error": "order_id is required"}, status=400)
+        if not fulfillment_id:
+            return Response({"error": "fulfillment_id is required"}, status=400)
+
+        try:
+            result = OnRescheduleService().execute(
+                {},
+                {
+                    "order_id": order_id,
+                    "fulfillment_id": fulfillment_id,
+                    "note": message.get("note", ""),
+                },
+            )
+        except (ValueError, Exception) as exc:
+            return Response({"error": str(exc)}, status=422)
+
+        facility = self._facility_from_booking(result)
+        response_context = build_response_context(req_context, "reschedule", facility)
         return Response({"context": response_context, "message": result}, status=200)
 
     @staticmethod
