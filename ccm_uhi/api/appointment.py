@@ -12,6 +12,7 @@ from ccm_uhi.services.on_confirm_service import OnConfirmService
 from ccm_uhi.services.on_status_service import OnStatusService
 from ccm_uhi.services.on_cancel_service import OnCancelService
 from ccm_uhi.services.on_reschedule_service import OnRescheduleService
+from ccm_uhi.services.service_availability_service import ServiceAvailabilityService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,33 @@ class AppointmentViewSet(ViewSet):
             result = OnSearchService().execute({}, {"provider_id": provider_id})
         except (ValueError, Exception) as exc:
             return Response({"error": str(exc)}, status=422)
+        return Response(result, status=200)
+
+    @action(detail=False, methods=["post"])
+    @extend_schema(responses={200: dict}, tags=["CCM UHI"])
+    def service_availability(self, request, *args, **kwargs):
+        """List healthcare services at a facility with optional filters."""
+
+        provider_id = request.data.get("provider_id")
+        pincode = request.data.get("pincode")
+        service_name = request.data.get("service")
+
+        pincode_int = None
+        if pincode:
+            try:
+                pincode_int = int(pincode)
+            except (ValueError, TypeError):
+                return Response({"error": "pincode must be a valid integer"}, status=400)
+
+        try:
+            result = ServiceAvailabilityService().execute(
+                facility_external_id=provider_id,
+                facility_pincode=pincode_int,
+                service_name=service_name,
+            )
+        except Exception as exc:
+            return Response({"error": str(exc)}, status=422)
+
         return Response(result, status=200)
 
     @action(detail=False, methods=["post"])

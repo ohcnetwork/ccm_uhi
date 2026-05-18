@@ -37,6 +37,7 @@ def map_facility_to_provider(facility: Facility) -> dict:
         "descriptor": {
             "name": facility.name,
             "short_desc": facility.description or "",
+            "phone": facility.phone_number or "",
         },
         "location": {
             "id": str(facility.external_id),
