@@ -1,7 +1,6 @@
 import logging
-
-from care.emr.models.healthcare_service import HealthcareService
 from care.facility.models.facility import Facility
+from care.emr.models.healthcare_service import HealthcareService
 from ccm_uhi.mappers.catalog_mapper import map_facility_to_provider
 
 logger = logging.getLogger(__name__)
@@ -14,67 +13,63 @@ class ServiceAvailabilityService:
         self,
         facility_external_id: str | None = None,
         facility_pincode: int | None = None,
-        service_name: str | None = None,
+        service_names: str | list[str] | None = None,
     ) -> dict:
-        facilities = self._resolve_facilities(facility_external_id, facility_pincode)
-        if not facilities:
-            return {"providers": []}
+        filters={
+                "facility__isnull": False,
+                "facility__is_active": True,
+                "deleted": False,
+        }
+        if service_names:
+            if not isinstance(service_names, list):
+                service_names = [service_names]
+            from django.db.models import Q
+            name_q = Q()
+            for name in service_names:
+                name_q |= Q(name__icontains=name)
+            filters_q = Q(**filters) & name_q
+        else:
+            filters_q = Q(**filters)
 
-        providers = []
-        for facility in facilities:
-            services = self._get_services(facility, service_name)
-            if not services:
-                continue
-            provider = map_facility_to_provider(facility)
-            provider["services"] = services
-            providers.append(provider)
-
-        return {"providers": providers}
-
-    def _resolve_facilities(
-        self,
-        facility_external_id: str | None,
-        facility_pincode: int | None,
-    ) -> list[Facility]:
-        """Resolve facilities by external_id or pincode. Returns all if no filter given."""
         if facility_external_id:
-            try:
-                return [
-                    Facility.objects.get(
-                        external_id=facility_external_id, is_active=True
-                    )
-                ]
-            except Facility.DoesNotExist:
-                logger.warning(
-                    "Facility not found: external_id=%s", facility_external_id
-                )
-                return []
+            filters_q &= Q(facility__external_id=facility_external_id)
 
         if facility_pincode:
-            return list(
-                Facility.objects.filter(pincode=facility_pincode, is_active=True)
-            )
+            filters_q &= Q(facility__pincode=facility_pincode)
 
-        # No filter provided — return all active facilities
-        return list(Facility.objects.filter(is_active=True))
+        hs_qs = HealthcareService.objects.filter(filters_q).select_related("facility", "managing_organization")
 
-    def _get_services(self, facility: Facility, service_name: str | None) -> list[dict]:
-        """Get all healthcare services for a facility, optionally filtered by name."""
-        hs_qs = HealthcareService.objects.filter(facility=facility, deleted=False)
-
-        if service_name:
-            hs_qs = hs_qs.filter(name__icontains=service_name)
-
-        services = []
+        facility_services: dict[int, tuple[Facility, list[dict]]] = {}
         for hs in hs_qs:
-            mang_dept = {
-            "id": str(hs.managing_organization.external_id),
-            "name": hs.managing_organization.name,
-            } if hs.managing_organization else {}
-            services.append({
+            facility = hs.facility
+            if facility.id not in facility_services:
+                facility_services[facility.id] = (facility, [])
+
+            mang_dept = {}
+            if hs.managing_organization:
+                mang_dept = {
+                    "id": str(hs.managing_organization.external_id),
+                    "name": hs.managing_organization.name,
+                }
+
+            facility_services[facility.id][1].append({
                 "id": str(hs.external_id),
                 "name": hs.name,
                 "managing_department": mang_dept,
             })
 
-        return services
+        # Only include facilities that have ALL requested services
+        providers = []
+        for facility, services in facility_services.values():
+            if service_names and len(service_names) > 1:
+                matched_names = {s["name"].lower() for s in services}
+                if not all(
+                    any(sn.lower() in m for m in matched_names)
+                    for sn in service_names
+                ):
+                    continue
+            provider = map_facility_to_provider(facility)
+            provider["services"] = services
+            providers.append(provider)
+
+        return {"providers": providers}

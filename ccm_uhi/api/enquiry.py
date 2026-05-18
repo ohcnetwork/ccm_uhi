@@ -15,8 +15,7 @@ class ServiceAvailabilityView(APIView):
 
         provider_id = request.data.get("provider_id")
         pincode = request.data.get("pincode")
-        service_name = request.data.get("service_name")
-
+        service_names = request.data.get("services")
         pincode_int = None
         if pincode:
             try:
@@ -28,7 +27,7 @@ class ServiceAvailabilityView(APIView):
             result = ServiceAvailabilityService().execute(
                 facility_external_id=provider_id,
                 facility_pincode=pincode_int,
-                service_name=service_name,
+                service_names=service_names,
             )
         except Exception as exc:
             return Response({"error": str(exc)}, status=422)
