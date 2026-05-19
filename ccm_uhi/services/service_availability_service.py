@@ -1,4 +1,5 @@
 import logging
+from django.db.models import Q
 from care.facility.models.facility import Facility
 from care.emr.models.healthcare_service import HealthcareService
 from ccm_uhi.mappers.catalog_mapper import map_facility_to_provider
@@ -23,7 +24,6 @@ class ServiceAvailabilityService:
         if service_names:
             if not isinstance(service_names, list):
                 service_names = [service_names]
-            from django.db.models import Q
             name_q = Q()
             for name in service_names:
                 name_q |= Q(name__icontains=name)
