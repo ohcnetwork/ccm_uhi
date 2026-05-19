@@ -669,18 +669,3 @@ POST /service_availability/
 ```
 
 ---
-
-## Error Responses
-
-All endpoints return errors in the following format:
-
-| Status | Description |
-|--------|-------------|
-| `400` | Invalid request (missing required fields, invalid format) |
-| `422` | Processing error (resource not found, business logic failure) |
-
-```json
-{
-  "error": "Description of the error"
-}
-```
