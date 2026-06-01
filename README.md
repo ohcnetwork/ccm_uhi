@@ -247,3 +247,139 @@ Cancels an existing order. Requires a valid `order_id`.
 ```
 
 This plugin was created with [Cookiecutter](https://github.com/audreyr/cookiecutter) using the [ohcnetwork/care-plugin-cookiecutter](https://github.com/ohcnetwork/care-plugin-cookiecutter).
+
+---
+
+## Notifications
+
+Patient notifications are pushed to the CCM gateway endpoint as fire-and-forget HTTP POST requests. They are triggered automatically via Django signals on booking/token state changes and dispatched through Celery tasks.
+
+### Payload Format
+
+All notifications are sent as JSON with this structure:
+
+```json
+{
+  "requestid": "<UUID>",
+  "fortype": "<string: notification type>",
+  "patientid": "<string: patient ABHA identifier>",
+  "notificationmessage": "<string: human-readable message>"
+}
+```
+
+### Notification Types & Triggers
+
+#### 1. Booking Confirmation
+
+**Trigger:** `TokenBooking` status changes to `booked` with a token assigned.
+
+**fortype:** `Booking`
+
+```json
+{
+  "requestid": "EBA5D680-7989-4CF6-9B2A-3AF06030F5CA",
+  "fortype": "Booking",
+  "patientid": "91674538728603",
+  "notificationmessage": "Your appointment has been booked successfully. Booking ID: 30d00ccc-3121-4b15-b12e-45a1ac174f42, Patient: John Doe, Practitioner: Dr. Smith, Date & Time: 2026-06-01 10:00, Token Number: ccm-5"
+}
+```
+
+#### 2. Reschedule
+
+**Trigger:** Reschedule API calls `OnConfirmService` internally to create a new booking, which triggers a `Booking` notification for the new appointment (same as a fresh booking).
+
+**fortype:** `Booking`
+
+```json
+{
+  "requestid": "A1B2C3D4-5678-90AB-CDEF-1234567890AB",
+  "fortype": "Booking",
+  "patientid": "91674538728603",
+  "notificationmessage": "Your appointment has been booked successfully. Booking ID: 30d00ccc-3121-4b15-b12e-45a1ac174f42, Patient: John Doe, Practitioner: Dr. Smith, New Date & Time: 2026-06-02 14:00, Token Number: ccm-5"
+}
+```
+
+> **Note:** A reschedule also cancels the old booking, which triggers a separate `Cancellation` notification for the original appointment.
+
+#### 3. Cancellation
+
+**Trigger:** `TokenBooking` status changes to `cancelled`.
+
+**fortype:** `Cancellation`
+
+```json
+{
+  "requestid": "F1E2D3C4-B5A6-9780-1234-ABCDEF567890",
+  "fortype": "Cancellation",
+  "patientid": "91674538728603",
+  "notificationmessage": "Your appointment has been cancelled. Booking ID: 30d00ccc-3121-4b15-b12e-45a1ac174f42, Patient: John Doe"
+}
+```
+
+#### 4. Reminder (1 hour before appointment)
+
+**Trigger:** Scheduled automatically when a booking is confirmed; fires 1 hour before the slot start time.
+
+**fortype:** `Reminder`
+
+```json
+{
+  "requestid": "12345678-ABCD-EF01-2345-6789ABCDEF01",
+  "fortype": "Reminder",
+  "patientid": "91674538728603",
+  "notificationmessage": "Reminder: Your appointment is scheduled in 1 hour. Booking ID: 30d00ccc-3121-4b15-b12e-45a1ac174f42, Patient: John Doe, Practitioner: Dr. Smith, Date & Time: 2026-06-01 10:00, Token Number: ccm-5"
+}
+```
+
+#### 5. Queue Management — Position 5
+
+**Trigger:** Patient's token reaches position 5 in the active queue.
+
+**fortype:** `QueueManagement`
+
+```json
+{
+  "requestid": "AABBCCDD-1122-3344-5566-778899AABBCC",
+  "fortype": "QueueManagement",
+  "patientid": "91674538728603",
+  "notificationmessage": "Queue update for token ccm-11. Current queue position: 5. You are 5th in the queue."
+}
+```
+
+#### 6. Queue Management — Next in Queue
+
+**Trigger:** Patient's token is next to be called (position immediately after the currently-called token).
+
+**fortype:** `QueueManagement`
+
+```json
+{
+  "requestid": "11223344-AABB-CCDD-EEFF-556677889900",
+  "fortype": "QueueManagement",
+  "patientid": "91674538728603",
+  "notificationmessage": "Queue update for token ccm-12. Current queue position: 2. You are next in the queue."
+}
+```
+
+#### 7. Queue Management — Token Called
+
+**Trigger:** Patient's token status changes to `called` / `in_progress` / `ongoing` / `serving`.
+
+**fortype:** `QueueManagement`
+
+```json
+{
+  "requestid": "EBA5D680-7989-4CF6-9B2A-3AF06030F5CA",
+  "fortype": "QueueManagement",
+  "patientid": "91674538728603",
+  "notificationmessage": "Queue update for token ccm-11. Current queue position: 7. Your token is currently being called."
+}
+```
+
+### Notification Flow
+
+1. Django signal (`post_save` on `TokenBooking` or `Token`) fires
+2. Celery task is dispatched (`.delay()`)
+3. Task resolves the patient's ABHA identifier
+4. `send_patient_notification()` builds payload and POSTs to endpoint
+5. Response is logged; failures are retried (max 2 retries)
