@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from care.emr.api.viewsets.scheduling import lock_create_appointment
 from care.emr.models.organization import Organization
-from care.emr.models.patient import Patient
+from care.emr.models.patient import Patient, PatientIdentifier, PatientIdentifierConfig
 from care.emr.models.scheduling.booking import TokenBooking, TokenSlot
 from care.emr.resources.patient.spec import PatientCreateSpec
 from care.emr.resources.scheduling.slot.spec import BookingStatusChoices
@@ -16,6 +16,8 @@ from care.emr.resources.scheduling.token.spec import TokenStatusOptions
 from care.emr.models.scheduling.token import Token, TokenCategory, TokenQueue
 from care.facility.models.facility import Facility
 from care.utils.lock import Lock
+
+from ccm_uhi.tasks.beckn_tasks import send_booking_reminder
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +103,12 @@ class OnConfirmService:
     def _resolve_or_create_patient(self, patient_data: dict) -> Patient:
         """Find existing patient by phone and name, or create via PatientCreateSpec."""
         phone = patient_data.get("phone_number", "")
-        if not phone.startswith("+91"):
-            patient_data["phone_number"] = "+91" + phone
+        if phone and not phone.startswith("+91"):
+            phone = "+91" + phone
+            patient_data["phone_number"] = phone
 
         name = patient_data.get("name", "")
+        abha_number = patient_data.pop("abha_number", "")
 
         raw_bg = patient_data.get("blood_group")
         patient_data["blood_group"] = BLOOD_GROUP_LABEL_MAP.get(
@@ -122,6 +126,7 @@ class OnConfirmService:
             phone_number=phone, name__icontains=name, deleted=False
         ).first()
         if existing:
+            self._upsert_abha_identifier(existing, abha_number)
             return existing
 
         patient_data["geo_organization"] = str(
@@ -131,7 +136,56 @@ class OnConfirmService:
         spec = PatientCreateSpec(**patient_data)
         patient = spec.de_serialize()
         patient.save()
+        self._upsert_abha_identifier(patient, abha_number)
         return patient
+
+    def _upsert_abha_identifier(self, patient: Patient, abha_number: str | None) -> None:
+        """Create ABHA identifier config if missing and store ABHA number for patient."""
+        if not abha_number:
+            return
+
+        config = PatientIdentifierConfig.objects.filter(
+            facility__isnull=True,
+            config__system="system.care.ohc.network/patient-abha-number"
+        ).first()
+
+        if not config:
+            config = PatientIdentifierConfig.objects.create(
+                status="active",
+                config={
+                    "use": "official",
+                    "system": "system.care.ohc.network/patient-abha-number",
+                    "required": False,
+                    "unique": True,
+                    "regex": r"^\\d{14}$",
+                    "display": "ABHA Number",
+                    "retrieve_config": {
+                        "retrieve_with_dob": False,
+                        "retrieve_with_year_of_birth": False,
+                        "retrieve_with_otp": False,
+                        "retrieve_partial_search": False,
+                    },
+                    "auto_maintained": False,
+                },
+            )
+
+        identifier = PatientIdentifier.objects.filter(
+            patient=patient,
+            config=config,
+        ).first()
+
+        if not identifier:
+            PatientIdentifier.objects.create(
+                patient=patient,
+                config=config,
+                value=abha_number,
+            )
+        elif identifier.value != abha_number:
+            identifier.value = abha_number
+            identifier.save(update_fields=["value", "modified_date"])
+
+        patient.build_instance_identifiers()
+        patient.save()
 
     # ── Confirm-originated helpers ───────────────────────────────────
 
@@ -204,7 +258,28 @@ class OnConfirmService:
             booking.status = BookingStatusChoices.booked.value
             booking.save(update_fields=["token", "status", "modified_date"])
 
+        self._schedule_booking_reminder(booking)
+
         return token
+
+    def _schedule_booking_reminder(self, booking: TokenBooking) -> None:
+        """Schedule a reminder for one hour before the appointment time."""
+        slot = booking.token_slot
+        if not slot or not slot.start_datetime:
+            logger.info("Skipping reminder schedule for booking=%s because slot start time is missing", booking.external_id)
+            return
+
+        reminder_at = slot.start_datetime - timedelta(hours=1)
+        if timezone.is_naive(reminder_at):
+            reminder_at = timezone.make_aware(reminder_at, timezone.get_current_timezone())
+
+        def dispatch() -> None:
+            if reminder_at > timezone.now():
+                send_booking_reminder.apply_async(args=[booking.id], eta=reminder_at)
+            else:
+                send_booking_reminder.delay(booking.id)
+
+        transaction.on_commit(dispatch)
 
     # ── Response builder ─────────────────────────────────────────────
 
