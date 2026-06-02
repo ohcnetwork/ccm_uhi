@@ -267,7 +267,7 @@ Creates an emergency resource request to alert a facility about an incoming pati
     "name": "John Doe",
     "phone_number": "9876543210",
     "gender": "male",
-    "blood_group": "O_positive",
+    "blood_group": "O+",
     "abha_number": "12345678901234",
     "date_of_birth": "1990-05-15",
     "year_of_birth": 1990,
@@ -282,38 +282,6 @@ Creates an emergency resource request to alert a facility about an incoming pati
     "eta_minutes": 15,
     "notes": "Patient is conscious, minor head injury"
   },
-}
-```
-
-**Response (200):**
-
-```json
-{
-  "resource_request": {
-    "id": "<uuid>",
-    "title": "Emergency Admission",
-    "status": "transfer_in_progress",
-    "emergency": true,
-    "reason": "Emergency ambulance incoming.\nVehicle: TS09AB1234\nDriver: Ravi Kumar\nDriver Phone: 9876543210\nETA: 15 minutes\nNotes: Patient is conscious, minor head injury",
-    "category": "patient_care",
-    "priority": 1
-  },
-  "facility": {
-    "id": "<uuid>",
-    "name": "District Hospital"
-  },
-  "patient": {
-    "id": "<uuid>",
-    "name": "John Doe",
-    "phone_number": "+919876543210"
-  },
-  "ambulance": {
-    "vehicle_number": "TS09AB1234",
-    "driver_name": "Ravi Kumar",
-    "driver_phone": "9876543210",
-    "eta_minutes": 15,
-    "notes": "Patient is conscious, minor head injury"
-  }
 }
 ```
 
