@@ -250,6 +250,75 @@ This plugin was created with [Cookiecutter](https://github.com/audreyr/cookiecut
 
 ---
 
+## Emergency Resource Request
+
+### 7. Emergency Request
+
+**`POST /emergency_request/`**
+
+Creates an emergency resource request to alert a facility about an incoming patient (e.g. ambulance transfer). Only one active request (status `pending` or `transfer_in_progress`) is allowed per patient.
+
+**Request:**
+
+```json
+{
+  "provider_id": "<uuid: facility external_id>",
+  "patient": {
+    "name": "John Doe",
+    "phone_number": "9876543210",
+    "gender": "male",
+    "blood_group": "O_positive",
+    "abha_number": "12345678901234",
+    "date_of_birth": "1990-05-15",
+    "year_of_birth": 1990,
+    "address": "42, MG Road, Bengaluru, Karnataka, IND - 560001",
+    "permanent_address": "42, MG Road, Bengaluru, Karnataka, IND - 560001",
+    "pincode": 560001
+  },
+  "ambulance": {
+    "vehicle_number": "TS09AB1234",
+    "driver_name": "Ravi Kumar",
+    "driver_phone": "9876543210",
+    "eta_minutes": 15,
+    "notes": "Patient is conscious, minor head injury"
+  },
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "resource_request": {
+    "id": "<uuid>",
+    "title": "Emergency Admission",
+    "status": "transfer_in_progress",
+    "emergency": true,
+    "reason": "Emergency ambulance incoming.\nVehicle: TS09AB1234\nDriver: Ravi Kumar\nDriver Phone: 9876543210\nETA: 15 minutes\nNotes: Patient is conscious, minor head injury",
+    "category": "patient_care",
+    "priority": 1
+  },
+  "facility": {
+    "id": "<uuid>",
+    "name": "District Hospital"
+  },
+  "patient": {
+    "id": "<uuid>",
+    "name": "John Doe",
+    "phone_number": "+919876543210"
+  },
+  "ambulance": {
+    "vehicle_number": "TS09AB1234",
+    "driver_name": "Ravi Kumar",
+    "driver_phone": "9876543210",
+    "eta_minutes": 15,
+    "notes": "Patient is conscious, minor head injury"
+  }
+}
+```
+
+---
+
 ## Notifications
 
 Patient notifications are pushed to the CCM gateway endpoint as fire-and-forget HTTP POST requests. They are triggered automatically via Django signals on booking/token state changes and dispatched through Celery tasks.
